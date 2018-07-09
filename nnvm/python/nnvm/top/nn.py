@@ -140,7 +140,42 @@ def schedule_conv2d(attrs, outs, target):
 def alter_conv2d_layout(attrs, inputs, tinfos):
     return topi.nn.conv2d_alter_layout(attrs, inputs, tinfos)
 
+@reg.register_alter_op("conv2d")
+def alter_conv2d_layout(attrs, inputs, tinfos):
+    return topi.nn.conv2d_replace_with_winograd(attrs, inputs, tinfos)
+
 reg.register_pattern("conv2d", OpPattern.OUT_ELEMWISE_FUSABLE)
+
+@reg.register_compute("_contrib_winograd_filter_transform")
+def compute_contrib_winograd_filter_transform(attrs, inputs, _):
+    return topi.nn.winograd_filter_transform(inputs[0])    
+
+@reg.register_compute("_contrib_conv2d_winograd_without_filter_transform")
+def compute_contrib_conv2d_winograd_without_filter_transform(attrs, inputs, tinfo):
+    padding = attrs.get_int_tuple("padding")
+    strides = attrs.get_int_tuple("strides")
+    channels = attrs.get_int("channels")
+    assert (channels >= 8 and padding == (1,1) and strides == (1,1))
+    out = topi.nn.conv2d_winograd_without_filter_transform(inputs[0], inputs[1])
+    if attrs.get_bool("use_bias"):
+        bias = inputs[2]
+        expand_axis = 1
+        bias = topi.expand_dims(bias, axis=expand_axis, num_newaxis=2)
+        out = topi.add(out, bias)
+    return out
+
+@reg.register_schedule("_contrib_winograd_filter_transform")
+def schedule_contrib_winograd_filter_transform(attrs, outs, target):
+    with tvm.target.create(target):
+        return topi.nn.schedule_winograd_filter_transform(outs)
+
+@reg.register_schedule("_contrib_conv2d_winograd_without_filter_transform")
+def schedule_contrib_conv2d_winograd_without_filter_transform(attrs, outs, target):
+    with tvm.target.create(target):
+        return topi.nn.schedule_conv2d_winograd_without_filter_transform(outs)
+
+reg.register_pattern("_contrib_winograd_filter_transform", OpPattern.INJECTIVE)    
+reg.register_pattern("_contrib_conv2d_winograd_without_filter_transform", OpPattern.OUT_ELEMWISE_FUSABLE)
 
 # convolution NCHWc
 @reg.register_compute("_contrib_conv2d_NCHWc")

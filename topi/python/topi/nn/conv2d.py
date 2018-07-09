@@ -128,6 +128,17 @@ def conv2d_alter_layout(attrs, inputs, tinfos):
     # not to change by default
     return None
 
+@tvm.target.generic_func
+def conv2d_replace_with_winograd(attrs, inputs, tinfos):
+    return None
+
+@tvm.target.generic_func
+def winograd_filter_transform(kernel):
+    return None
+
+@tvm.target.generic_func
+def conv2d_winograd_without_filter_transform(attrs, inputs, tinfos):
+    return None
 
 def _get_workload(data, kernel, stride, padding, out_dtype):
     """ Get the workload structure. """

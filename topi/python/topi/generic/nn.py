@@ -53,6 +53,13 @@ def schedule_conv2d_nhwc(outs):
     """
     return _default_schedule(outs, False)
 
+@tvm.target.generic_func
+def schedule_winograd_filter_transform(outs):
+    return _default_schedule(outs, False)
+
+@tvm.target.generic_func
+def schedule_conv2d_winograd_without_filter_transform(outs):
+    return _default_schedule(outs, False)
 
 @tvm.target.generic_func
 def schedule_conv2d_NCHWc(num_filter, kernel_size, strides, padding, outs):

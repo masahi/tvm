@@ -17,6 +17,7 @@ OPT_PASS_LEVEL = {
     "OpFusion": 1,
     "FoldScaleAxis": 3,
     "AlterOpLayout": 3,
+    "ReplaceConv2dWithWinograd": 4,
 }
 
 # List of optimization pass and level when switch on
@@ -74,6 +75,9 @@ class BuildConfig(object):
         """
         if self.add_pass and pass_name in self.add_pass:
             return True
+        if pass_name == "AlterOpLayout":
+            if self.opt_level == 3: return True
+            return False
         return self.opt_level >= OPT_PASS_LEVEL[pass_name]
 
 
@@ -139,7 +143,6 @@ def _update_shape_dtype(shape, dtype, params):
         dtype.update({k : str(v.dtype) for k, v in params.items()})
     return shape, dtype
 
-
 def optimize(graph, shape, dtype="float32", layout=None):
     """Perform target and parameter invariant graph optimization.
 
@@ -158,6 +161,17 @@ def optimize(graph, shape, dtype="float32", layout=None):
     """
     # pylint: disable=unused-argument
     cfg = BuildConfig.current
+
+    if cfg.pass_enabled("ReplaceConv2dWithWinograd"):
+        layout = layout if layout else {}
+        graph = graph_attr.set_layout_inputs(graph, layout)
+        graph = graph.apply(["CorrectLayout"])
+
+        graph = graph_attr.set_shape_inputs(graph, shape)
+        graph = graph_attr.set_dtype_inputs(graph, dtype)
+        graph = graph.apply(["InferShape", "InferType", "ReplaceConv2dWithWinograd"])
+        graph = graph_attr.set_layout_inputs(graph, layout)
+        graph = graph.apply(["CorrectLayout"])
 
     if cfg.pass_enabled("AlterOpLayout"):
         layout = layout if layout else {}
