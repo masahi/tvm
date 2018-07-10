@@ -1,12 +1,13 @@
 # pylint: disable=invalid-name,unused-variable,invalid-name
 import tvm
+import numpy as np
 from .. import generic, tag
 from .. import nn
 from ..nn.util import infer_pad, infer_stride
 from .. import util
 from ..nn import pad
 from ..nn.conv2d import conv2d_winograd_without_filter_transform, winograd_filter_transform, conv2d_replace_with_winograd
-from injective import schedule_injective
+from .injective import schedule_injective
 
 def const_array(data, name):
     """ convert an const array to tvm tensor"""
@@ -26,6 +27,7 @@ def const_array(data, name):
 @conv2d_replace_with_winograd.register("cpu")
 def replace_with_winograd_4x4(attrs, inputs, tinfos):
     import nnvm.symbol as sym
+    print("replace_with_winograd_4x4 called")
     copy_inputs = [s for s in inputs]
     #new_attrs = {k : attrs[k] for k in attrs.keys()}
     padding = attrs.get_int_tuple("padding")
@@ -33,23 +35,25 @@ def replace_with_winograd_4x4(attrs, inputs, tinfos):
     dilation = attrs.get_int_tuple("dilation")
     groups = attrs.get_int("groups")
     channels = attrs.get_int("channels")
-    in_channel = inputs[0].shape[1]
+    kernel_size = attrs.get_int_tuple("kernel_size")    
+    in_channel = tinfos[0].shape[1].value
+    print(type(inputs[1]))
 
     if groups == 1 and kernel_size == (3, 3) and strides == (1, 1) and padding == (1, 1) and channels >= 8 and in_channel >= 8:
         new_attrs = {}
-        new_attrs['use_gpu'] = false;
-        new_attrs['tile_size'] = 6;
-        copy_inputs[1] = sym.contrib.winograd_filter_transform(*news_attrs, tvm.Array(inputs[1]), tinfos)        
+        copy_inputs[1] = sym.contrib.winograd_filter_transform(inputs[1], tile_size=6, use_gpu=False)
+        new_attrs['use_gpu'] = False
+        new_attrs['tile_size'] = 6
         new_attrs['layout'] = 'NCHW8c'
         new_attrs['out_layout'] = 'NCHW8c'
         new_attrs['kernel_layout'] = 'OIHW'
-        new_attrs['channels'] = channel
+        new_attrs['channels'] = channels
         new_attrs['use_bias'] = attrs.get_bool("use_bias")
         return sym.contrib.conv2d_winograd_without_filter_transform(*copy_inputs, **new_attrs)
     return sym.conv2d(attrs, inputs, tinfos)
 
 @winograd_filter_transform.register("cpu")
-def winograd_filter_transform_4x4(attrs, inputs, tinfos):
+def winograd_filter_transform_4x4(kernel):
     shape = util.get_const_tuple(kernel.shape)
     shape = (6, 6) + shape[:2]
     G_data = np.array([
@@ -61,13 +65,17 @@ def winograd_filter_transform_4x4(attrs, inputs, tinfos):
         [0, 0, 1]
     ], dtype=np.float32)
     
-    G = const_matrix(G_data, 'G')
+    G = const_array(G_data, 'G')
     r_kh = tvm.reduce_axis((0, 3), name='r_kh')
     r_kw = tvm.reduce_axis((0, 3), name='r_kw')
-    return tvm.compute(shape, lambda eps, nu, co, ci:
-                       tvm.sum(kernel[co][ci][r_kh][r_kw] *
-                               G[eps][r_kh] * G[nu][r_kw],
-                               axis=[r_kh, r_kw]), name='transform_weight')
+    C = kernel.shape[1].value
+    K = kernel.shape[0].value
+    print(K, C)
+    bnb, bna = 8, 8
+    U = tvm.compute((C // bnb, K // bna, 6,6, 8, 8), lambda c, k, eps, nu, cc, kk:
+                    tvm.sum(kernel[k * bna + kk][c * bnb + cc][r_kh][r_kw] * G[eps][r_kh] * G[nu][r_kw],
+                            axis=[r_kh, r_kw]), name='U')
+    return U
 
 @conv2d_winograd_without_filter_transform.register("cpu")
 def conv2d_winograd_4x4(data, U):
@@ -126,15 +134,16 @@ def conv2d_winograd_4x4(data, U):
     r_nu = tvm.reduce_axis((0, alpha), 'r_nu')
     output = tvm.compute((N, K // bna, H, W, bna), lambda n, k, h, w, kk: 
                     tvm.sum(M[(n * nH * nW + (h//m) * nW + w//m)//bna][k][r_eps][r_nu][(n * nH * nW + (h//m) * nW + w//m)%bna][kk] * A[r_eps][h % m] * A[r_nu][w % m],
-                            axis=[r_eps, r_nu]), name='output', tag=tag="conv2d_winograd")
+                            axis=[r_eps, r_nu]), name='output', tag="conv2d_winograd")
     
     return output
 
-@generic.schedule_winograd_filter_transform.register(["cpu"]):
+@generic.schedule_winograd_filter_transform.register(["cpu"])
 def schedule_winograd_weight_transform(outs):
     return schedule_injective(outs)
 
 def schedule_winograd_without_filter_transform(s, op):
+    print("schedule_winograd_without_filter_transform called")
     output = op.output(0)
     M, A = s[output].op.input_tensors
     V, U = s[M].op.input_tensors

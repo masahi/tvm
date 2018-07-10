@@ -137,7 +137,7 @@ def winograd_filter_transform(kernel):
     return None
 
 @tvm.target.generic_func
-def conv2d_winograd_without_filter_transform(attrs, inputs, tinfos):
+def conv2d_winograd_without_filter_transform(attrs, inputs):
     return None
 
 def _get_workload(data, kernel, stride, padding, out_dtype):

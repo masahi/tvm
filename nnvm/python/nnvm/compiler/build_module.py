@@ -169,7 +169,7 @@ def optimize(graph, shape, dtype="float32", layout=None):
 
         graph = graph_attr.set_shape_inputs(graph, shape)
         graph = graph_attr.set_dtype_inputs(graph, dtype)
-        graph = graph.apply(["InferShape", "InferType", "ReplaceConv2dWithWinograd"])
+        graph = graph.apply(["InferShape", "InferType", "AlterOp"])
         graph = graph_attr.set_layout_inputs(graph, layout)
         graph = graph.apply(["CorrectLayout"])
 
