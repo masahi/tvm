@@ -38,6 +38,8 @@ def replace_with_winograd_4x4(attrs, inputs, tinfos):
         new_attrs['layout'] = 'NCHW8c'
         new_attrs['out_layout'] = 'NCHW8c'
         new_attrs['kernel_layout'] = 'OIHW'
+        new_attrs['use_gpu'] = false;
+        new_attrs['tile_size'] = 6;
         kernel = inputs[1]
         copy_inputs[1] = sym.contrib.winograd_filter_transform(kernel)
         return sym.contrib.conv2d_winograd_without_filter_transform(*copy_inputs, **new_attrs)

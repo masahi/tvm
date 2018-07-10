@@ -165,6 +165,59 @@ struct Conv2DParam : public dmlc::Parameter<Conv2DParam> {
   static const constexpr int kBias = 2;
 };
 
+struct WinogradFilterTransformParam : public dmlc::Parameter<WinogradFilterTransformParam> {
+  bool use_gpu;
+  int tile_size;
+
+  DMLC_DECLARE_PARAMETER(WinogradFilterTransformParam) {
+    DMLC_DECLARE_FIELD(tile_size)
+      .describe("tile size");
+    DMLC_DECLARE_FIELD(use_gpu)
+      .describe("whether use gpu or not");
+  }
+  // constants
+  static const constexpr int kFilter = 0;
+};
+ 
+struct Conv2DWinogradParam : public dmlc::Parameter<Conv2DWinogradParam> {
+  int channels;
+  std::string layout;
+  std::string kernel_layout;
+  std::string out_layout;
+  bool use_gpu;
+  int tile_size;
+  bool use_bias;
+
+  DMLC_DECLARE_PARAMETER(Conv2DWinogradParam) {
+    DMLC_DECLARE_FIELD(channels)
+      .describe("The dimensionality of the output space"
+                "i.e. the number of output channels in the convolution.");
+    DMLC_DECLARE_FIELD(tile_size)
+      .describe("tile size");
+    DMLC_DECLARE_FIELD(use_gpu)
+      .describe("whether use gpu or not");
+    DMLC_DECLARE_FIELD(layout).set_default("NCHW")
+      .describe("Dimension ordering of input data. Can be 'NCHW', 'NHWC', etc."
+                "'N', 'C', 'H', 'W' stands for batch, channel, height, and width"
+                "dimensions respectively. Convolution is applied on the 'H' and"
+                "'W' dimensions.");
+    DMLC_DECLARE_FIELD(out_layout).set_default("__undef__")
+      .describe("Dimension ordering of output. Can be 'NCHW', 'NHWC', etc."
+                "'N', 'C', 'H', 'W' stands for batch, channel, height, and width"
+                "dimensions respectively. Default to be same as input layout.");
+    DMLC_DECLARE_FIELD(kernel_layout).set_default("OIHW")
+      .describe("Dimension ordering of weight. Can be 'OIHW', 'OIHW16o16i', etc."
+                "'O', 'I', 'H', 'W' stands for num_filter, input_channel, height, and width"
+                "dimensions respectively.");
+    DMLC_DECLARE_FIELD(use_bias).set_default(true)
+      .describe("Whether the layer uses a bias vector.");
+  }
+  // constants
+  static const constexpr int kData = 0;
+  static const constexpr int kWeight = 1;
+  static const constexpr int kBias = 2;
+};
+ 
 
 struct Conv2DTransposeParam : public dmlc::Parameter<Conv2DTransposeParam> {
   int channels;

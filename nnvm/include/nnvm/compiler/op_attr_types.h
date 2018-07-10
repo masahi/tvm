@@ -89,6 +89,12 @@ using FTVMAlterOpLayout = std::function<
        const Array<Tensor>& tinfos,
        Symbol* ret)>;
 
+using FTVMAlterOp = std::function<
+  bool(const NodeAttrs& attrs,
+       const Symbol& inputs,
+       const Array<Tensor>& tinfos,
+       Symbol* ret)>;
+ 
 /*!
  * \brief Transform from normal operator to vectorized operator
  * \param node The source node.
