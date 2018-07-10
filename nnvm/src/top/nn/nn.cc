@@ -672,7 +672,6 @@ the input array by output[n, c, h, w, C] = data[n, C*16+c, h, w]
                     const Array<Tensor>& inputs,
                     const Array<Tensor>& outputs) {
     const LayoutTransformParam& param = nnvm::get<LayoutTransformParam>(attrs.parsed);
-
     Layout src_layout(param.src_layout);
     Layout dst_layout(param.dst_layout);
 

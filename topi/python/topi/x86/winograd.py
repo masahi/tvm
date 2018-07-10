@@ -27,21 +27,24 @@ def const_array(data, name):
 def replace_with_winograd_4x4(attrs, inputs, tinfos):
     import nnvm.symbol as sym
     copy_inputs = [s for s in inputs]
-    new_attrs = {k : attrs[k] for k in attrs.keys()}
+    #new_attrs = {k : attrs[k] for k in attrs.keys()}
     padding = attrs.get_int_tuple("padding")
     strides = attrs.get_int_tuple("strides")
     dilation = attrs.get_int_tuple("dilation")
     groups = attrs.get_int("groups")
     channels = attrs.get_int("channels")
+    in_channel = inputs[0].shape[1]
 
-    if groups == 1 and kernel_size == (3, 3) and strides == (1, 1) and padding == (1, 1) and channels >= 8:
+    if groups == 1 and kernel_size == (3, 3) and strides == (1, 1) and padding == (1, 1) and channels >= 8 and in_channel >= 8:
+        new_attrs = {}
+        new_attrs['use_gpu'] = false;
+        new_attrs['tile_size'] = 6;
+        copy_inputs[1] = sym.contrib.winograd_filter_transform(*news_attrs, tvm.Array(inputs[1]), tinfos)        
         new_attrs['layout'] = 'NCHW8c'
         new_attrs['out_layout'] = 'NCHW8c'
         new_attrs['kernel_layout'] = 'OIHW'
-        new_attrs['use_gpu'] = false;
-        new_attrs['tile_size'] = 6;
-        kernel = inputs[1]
-        copy_inputs[1] = sym.contrib.winograd_filter_transform(kernel)
+        new_attrs['channels'] = channel
+        new_attrs['use_bias'] = attrs.get_bool("use_bias")
         return sym.contrib.conv2d_winograd_without_filter_transform(*copy_inputs, **new_attrs)
     return sym.conv2d(attrs, inputs, tinfos)
 

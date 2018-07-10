@@ -37,7 +37,7 @@ tvm::Array<tvm::Tensor> GetTensorInfo(const IndexedGraph& idx_graph,
 }
 
 Graph AlterOp(const Graph& src) {
-  static auto& falter_op_layout =
+  static auto& falter_op =
     Op::GetAttr<nnvm::compiler::FTVMAlterOp >("FTVMAlterOp");
 
   const ShapeVector& shape_vec = src.GetAttr<ShapeVector>("shape");
@@ -56,7 +56,7 @@ Graph AlterOp(const Graph& src) {
     const auto& layouts = src.GetAttr<std::vector<Layout> >("layout");
     for (uint32_t nid = 0; nid < idx_graph.num_nodes(); ++nid) {
       const auto &inode = idx_graph[nid];
-      if (falter_op_layout.count(inode.source->op())) {
+      if (falter_op.count(inode.source->op())) {
         // do not record input layouts of nodes that will be replaced.
         continue;
       }
@@ -77,8 +77,9 @@ Graph AlterOp(const Graph& src) {
   auto transform = [&](uint32_t nid,
                        const NodePtr& n,
                        std::vector<NodeEntry>* ret) {
+
     nnvm::compiler::FTVMAlterOp fn_alter_op_layout =
-      falter_op_layout.get(n->op(), nullptr);
+      falter_op.get(n->op(), nullptr);
     if (fn_alter_op_layout == nullptr) {
       new_nodes[n.get()] = nid;
       return false;

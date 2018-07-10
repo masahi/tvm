@@ -134,12 +134,8 @@ inline bool Conv2DWinogradInferShape(const nnvm::NodeAttrs& attrs,
                              std::vector<TShape>* in_shape,
                              std::vector<TShape>* out_shape) {
   static const Layout kNCHW("NCHW");
-  static const Layout kOIHW("OIHW");
-
-  const Conv2DParam& param = nnvm::get<Conv2DParam>(attrs.parsed);
-
+  const Conv2DWinogradParam& param = nnvm::get<Conv2DWinogradParam>(attrs.parsed);
   const Layout in_layout(param.layout);
-  const Layout kernel_layout(param.kernel_layout);
   const Layout out_layout(param.out_layout);
 
   if (param.use_bias) {
@@ -155,15 +151,15 @@ inline bool Conv2DWinogradInferShape(const nnvm::NodeAttrs& attrs,
 
   CHECK_EQ(dshape.ndim(), 4U) << "Input data should be 4D";
 
-  TShape wshape;
   if (param.use_gpu){
-    wshape = {param.tile_size, param.tile_size, dshape[1], param.channels};)
+    TShape wshape({param.tile_size, param.tile_size, dshape[1], param.channels});
+    NNVM_ASSIGN_INPUT_SHAPE(attrs, *in_shape, Conv2DParam::kWeight, wshape);
   }
   else {
-    wshape = {dshape[1]/8, param.channels/8, param.tile_size, param.tile_size, 8, 8 };
+    TShape wshape = {dshape[1]/8, param.channels/8, param.tile_size, param.tile_size, 8, 8 };
+    NNVM_ASSIGN_INPUT_SHAPE(attrs, *in_shape, Conv2DParam::kWeight, wshape);
   }
 
-  NNVM_ASSIGN_INPUT_SHAPE(attrs, *in_shape, Conv2DParam::kWeight, wshape);
   if (param.use_bias) {
     static const Layout default_bias_layout("C");
     TShape bias_shape({param.channels});
@@ -183,6 +179,16 @@ inline bool Conv2DWinogradInferShape(const nnvm::NodeAttrs& attrs,
 inline bool WinogradFilterTransformInferShape(const nnvm::NodeAttrs& attrs,
                              std::vector<TShape>* in_shape,
                              std::vector<TShape>* out_shape) {
+  const auto& param = nnvm::get<WinogradFilterTransformParam>(attrs.parsed);
+  TShape filter_shape = in_shape->at(0);
+  if (param.use_gpu) {
+	  TShape oshape({ param.tile_size, param.tile_size,  filter_shape[0], filter_shape[1] });
+      NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_shape, 0, oshape);
+  }
+  else {
+      TShape oshape = {filter_shape[1]/8, filter_shape[0]/8, param.tile_size, param.tile_size, 8, 8 };
+      NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_shape, 0, oshape);
+  }
   return true;
 }
   
@@ -190,6 +196,9 @@ inline bool WinogradFilterTransformCorrectLayout(const NodeAttrs& attrs,
                                 std::vector<Layout> *ilayouts,
                                 const std::vector<Layout> *last_ilayouts,
                                 std::vector<Layout> *olayouts) {
+  Layout layout("NCHW");
+  NNVM_ASSIGN_LAYOUT(*ilayouts, 0, layout);
+  NNVM_ASSIGN_LAYOUT(*olayouts, 0, layout);
   return true;
 }
   
@@ -326,6 +335,7 @@ NNVM_REGISTER_OP(_contrib_winograd_filter_transform)
 .set_num_inputs(1)
 .set_support_level(2);
 
+DMLC_REGISTER_PARAMETER(WinogradFilterTransformParam);
 
 
 NNVM_REGISTER_OP(_contrib_conv2d_winograd_without_filter_transform)
@@ -344,6 +354,8 @@ NNVM_REGISTER_OP(_contrib_conv2d_winograd_without_filter_transform)
 .set_num_outputs(1)
 .set_num_inputs(UseBiasNumInputs<Conv2DParam>)
 .set_support_level(2);
+
+DMLC_REGISTER_PARAMETER(Conv2DWinogradParam);
 
 NNVM_REGISTER_OP(_conv2d_grad)
   .describe(R"code(2D convolution grad.

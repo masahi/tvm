@@ -155,7 +155,7 @@ def compute_contrib_conv2d_winograd_without_filter_transform(attrs, inputs, tinf
     padding = attrs.get_int_tuple("padding")
     strides = attrs.get_int_tuple("strides")
     channels = attrs.get_int("channels")
-    assert (channels >= 8 and padding == (1,1) and strides == (1,1))
+    assert (channels >= 8 and padding == (1,1) and strides == (1,1) and inputs[0].shape[1] >= 8)
     out = topi.nn.conv2d_winograd_without_filter_transform(inputs[0], inputs[1])
     if attrs.get_bool("use_bias"):
         bias = inputs[2]
