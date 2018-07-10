@@ -18,9 +18,9 @@ def get_sym(layout, kernel_layout, channels):
     return data
 
 
-def build_and_run(sym, params, data, out_shape):
+def build_and_run(sym, params, data, out_shape, opt_level=4):
     ctx = tvm.cpu(0)
-    with nnvm.compiler.build_config(opt_level=4):
+    with nnvm.compiler.build_config(opt_level=opt_level):
         graph, lib, params = nnvm.compiler.build(sym, "llvm", shape={"data":data.shape}, params=params)
     for (k, v) in params.items():
         print(k, v.shape)
@@ -45,8 +45,15 @@ def test():
         "conv2d0_bias" : tvm.nd.array(conv_bias, ctx=tvm.cpu(0))
     }
 
+    nchw_params2 = {
+        "conv2d1_weight" : tvm.nd.array(conv_weight.copy(), ctx=tvm.cpu(0)),
+        "conv2d1_bias" : tvm.nd.array(conv_bias.copy(), ctx=tvm.cpu(0))
+    }
+
     data = np.random.uniform(-1, 1, data_shape).astype(np.float32)
     oshape = (1, out_channel, 128, 128)
-    nchw_output = build_and_run(nchw_sym, nchw_params, data, oshape)
+    nchw_output = build_and_run(nchw_sym, nchw_params, data, oshape, opt_level=4)
+    nchw_output2 = build_and_run(nchw_sym2, nchw_params2, data, oshape, opt_level=3)
+    print(np.max(np.abs(nchw_output - nchw_output2)))
 
 test()
