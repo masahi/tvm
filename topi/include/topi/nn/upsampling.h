@@ -64,7 +64,6 @@ inline Tensor upsampling(const Tensor& input,
                          std::string name = "tensor",
                          std::string tag = kInjective) {
   if(input.ndim() == 5){
-     std::cout << "call upsampling nchwc\n";
      return upsampling_nearest_nchwc(input, shape);
   }
   return resize(input, shape, layout, false, mode);

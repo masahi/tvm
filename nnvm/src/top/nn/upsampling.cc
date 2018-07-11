@@ -42,7 +42,6 @@ inline bool UpSamplingInferShape(const nnvm::NodeAttrs& attrs,
   oshape[2] = oshape[2] * param.scale;
   oshape[3] = oshape[3] * param.scale;
   oshape = ConvertLayout(oshape, kNCHW, param.layout);
-  std::cout << "upsampling shape:" << oshape[0] << "," << oshape[1] << "," << oshape[2] << "," << oshape[3] << "," << oshape[4] << std::endl;
   NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_shape, 0, oshape);
 
   return true;
@@ -110,7 +109,6 @@ NNVM_REGISTER_OP(upsampling)
     oshape.push_back(out_info[0]->shape[1]);
     oshape.push_back(out_info[0]->shape[2]);
   }
-  std::cout << "upsampling ndim: " << inputs[0].ndim() << std::endl;
   return Array<Tensor>{ topi::nn::upsampling(inputs[0], oshape, param.layout, param.method)};
 })
 .set_support_level(2);

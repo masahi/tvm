@@ -156,7 +156,6 @@ inline bool Conv2DWinogradInferShape(const nnvm::NodeAttrs& attrs,
     NNVM_ASSIGN_INPUT_SHAPE(attrs, *in_shape, Conv2DParam::kWeight, wshape);
   }
   else {
-          std::cout << "dshape[1]: " << dshape[1] << std::endl;
     TShape wshape = {dshape[1]/8, param.channels/8, param.tile_size, param.tile_size, 8, 8 };
     NNVM_ASSIGN_INPUT_SHAPE(attrs, *in_shape, Conv2DParam::kWeight, wshape);
   }
@@ -187,7 +186,6 @@ inline bool WinogradFilterTransformInferShape(const nnvm::NodeAttrs& attrs,
       NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_shape, 0, oshape);
   }
   else {
-          std::cout << filter_shape[0] << "," << filter_shape[1] << std::endl;
       TShape oshape = {filter_shape[1]/8, filter_shape[0]/8, param.tile_size, param.tile_size, 8, 8 };
       NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_shape, 0, oshape);
   }

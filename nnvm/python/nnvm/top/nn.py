@@ -152,7 +152,7 @@ def compute_contrib_winograd_filter_transform(attrs, inputs, _):
 
 @reg.register_compute("_contrib_conv2d_winograd_without_filter_transform")
 def compute_contrib_conv2d_winograd_without_filter_transform(attrs, inputs, tinfo):
-    out = topi.nn.conv2d_winograd_without_filter_transform(inputs[0], inputs[1])
+    out = topi.nn.conv2d_winograd_without_filter_transform(inputs[0], inputs[1], )
     if attrs.get_bool("use_bias"):
         bias = inputs[2]
         expand_axis = 1

@@ -8,6 +8,7 @@ from .. import util
 from ..nn import pad
 from ..nn.conv2d import conv2d_winograd_without_filter_transform, winograd_filter_transform, conv2d_replace_with_winograd
 from .injective import schedule_injective
+from .conv2d import _alter_conv2d_layout
 
 def const_array(data, name):
     """ convert an const array to tvm tensor"""
@@ -27,7 +28,6 @@ def const_array(data, name):
 @conv2d_replace_with_winograd.register("cpu")
 def replace_with_winograd_4x4(attrs, inputs, tinfos):
     import nnvm.symbol as sym
-    print("replace_with_winograd_4x4 called")
     copy_inputs = [s for s in inputs]
     #new_attrs = {k : attrs[k] for k in attrs.keys()}
     padding = attrs.get_int_tuple("padding")
@@ -37,7 +37,6 @@ def replace_with_winograd_4x4(attrs, inputs, tinfos):
     channels = attrs.get_int("channels")
     kernel_size = attrs.get_int_tuple("kernel_size")    
     in_channel = tinfos[0].shape[1].value
-    print(type(inputs[1]))
 
     if groups == 1 and kernel_size == (3, 3) and strides == (1, 1) and padding == (1, 1) and channels >= 8 and in_channel >= 8:
         new_attrs = {}
@@ -50,7 +49,8 @@ def replace_with_winograd_4x4(attrs, inputs, tinfos):
         new_attrs['channels'] = channels
         new_attrs['use_bias'] = attrs.get_bool("use_bias")
         return sym.contrib.conv2d_winograd_without_filter_transform(*copy_inputs, **new_attrs)
-    return sym.conv2d(attrs, inputs, tinfos)
+
+    return _alter_conv2d_layout(attrs, inputs, tinfos)
 
 @winograd_filter_transform.register("cpu")
 def winograd_filter_transform_4x4(kernel):
@@ -70,7 +70,6 @@ def winograd_filter_transform_4x4(kernel):
     r_kw = tvm.reduce_axis((0, 3), name='r_kw')
     C = kernel.shape[1].value
     K = kernel.shape[0].value
-    print(K, C)
     bnb, bna = 8, 8
     U = tvm.compute((C // bnb, K // bna, 6,6, 8, 8), lambda c, k, eps, nu, cc, kk:
                     tvm.sum(kernel[k * bna + kk][c * bnb + cc][r_kh][r_kw] * G[eps][r_kh] * G[nu][r_kw],
