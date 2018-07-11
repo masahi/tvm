@@ -142,9 +142,8 @@ def conv2d_winograd_4x4(data, U):
 def schedule_winograd_weight_transform(outs):
     return schedule_injective(outs)
 
-def schedule_winograd_without_filter_transform(s, op):
-    print("schedule_winograd_without_filter_transform called")
-    output = op.output(0)
+def schedule_winograd_without_filter_transform(s, conv_op, output_op):
+    output = conv_op.output(0)
     M, A = s[output].op.input_tensors
     V, U = s[M].op.input_tensors
     data_pad, B = s[V].op.input_tensors
@@ -177,12 +176,22 @@ def schedule_winograd_without_filter_transform(s, op):
     r_eps, r_nu = s[output].op.reduce_axis    
     ho, hi = s[output].split(h, factor=8)
     wo, wi = s[output].split(w, factor=8)
-    s[output].reorder(n, k, ho, wo, hi, r_eps, r_nu, wi, kk)
+    s[output].reorder(n, k, ho, wo, hi, wi, r_eps, r_nu, kk)
     s[output].vectorize(kk)
-    fused = s[output].fuse(n, k, ho, wo) 
-    s[output].parallel(fused)
     _ = [s[output].unroll(x) for x in [r_eps, r_nu]]
-
+    if conv_op == output_op:
+        fused = s[output].fuse(n, k, ho, wo)
+        s[output].parallel(fused)
+    else:
+        n, k, h, w, kk = s[output_op].op.axis
+        ho, hi = s[output_op].split(h, factor=8)
+        wo, wi = s[output_op].split(w, factor=8)
+        s[output_op].reorder(n, k, ho, wo, hi, wi, kk)
+        s[output_op].vectorize(kk)
+        fused = s[output_op].fuse(n, k, ho, wo) 
+        s[output_op].parallel(fused)
+        s[conv_op].compute_at(s[output_op], fused)
+        
     return s
 
 @generic.schedule_conv2d_winograd_without_filter_transform.register(["cpu"])
@@ -190,6 +199,7 @@ def schedule_winograd(outs):
     """Create schedule for tensors"""
     s = tvm.create_schedule([x.op for x in outs])
     output_op = outs[0].op
+
 
     def traverse(op):
         """Traverse operators from computation graph"""
@@ -202,7 +212,7 @@ def schedule_winograd(outs):
                     traverse(tensor.op)
 
         if 'conv2d_winograd' in op.tag:
-            schedule_winograd_without_filter_transform(s, op)
+            schedule_winograd_without_filter_transform(s, op, output_op)
 
     traverse(output_op)
     return s
