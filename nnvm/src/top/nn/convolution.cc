@@ -182,7 +182,7 @@ inline bool WinogradFilterTransformInferShape(const nnvm::NodeAttrs& attrs,
   const auto& param = nnvm::get<WinogradFilterTransformParam>(attrs.parsed);
   TShape filter_shape = in_shape->at(0);
   if (param.use_gpu) {
-	  TShape oshape({ param.tile_size, param.tile_size,  filter_shape[0], filter_shape[1] });
+	  TShape oshape({ param.tile_size, param.tile_size,  filter_shape[1], filter_shape[0] });
       NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_shape, 0, oshape);
   }
   else {
