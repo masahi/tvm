@@ -18,3 +18,4 @@ from .extern import schedule_extern
 from .vision import schedule_region
 from .vision import schedule_reorg
 from .nn import schedule_lrn, schedule_l2_normalize
+from .winograd import *

@@ -24,9 +24,10 @@ def const_array(data, name):
         return now
     return tvm.compute(data.shape, select_array, name=name)
 
-@conv2d_replace_with_winograd.register(["cuda", "gpu"])
+@conv2d_replace_with_winograd.register(["cuda","gpu"])
 def replace_with_winograd_2x2(attrs, inputs, tinfos):
     import nnvm.symbol as sym
+    print("replace_with_winograd_2x2 called")
     copy_inputs = [s for s in inputs]
     #new_attrs = {k : attrs[k] for k in attrs.keys()}
     padding = attrs.get_int_tuple("padding")
@@ -51,7 +52,7 @@ def replace_with_winograd_2x2(attrs, inputs, tinfos):
 
     return sym.conv2d(attrs, inputs, tinfos)
 
-@winograd_filter_transform.register("cpu")
+@winograd_filter_transform.register(["cuda", "gpu"])
 def winograd_filter_transform_2x2(kernel):
     shape = util.get_const_tuple(kernel.shape)
     shape = (4, 4) + shape[:2]
@@ -67,18 +68,15 @@ def winograd_filter_transform_2x2(kernel):
     r_kw = tvm.reduce_axis((0, 3), name='r_kw')
     C = kernel.shape[1].value
     K = kernel.shape[0].value
-    bna, bnb = 4, 4 
-    U = tvm.compute((4, 4, K // bna, C, bna), lambda eps, nu, k, c, kk:
-                    tvm.sum(kernel[k * bna + kk][c][r_kh][r_kw] * G[eps][r_kh] * G[nu][r_kw],
+    U = tvm.compute((4, 4, C, K), lambda eps, nu, c, k:
+                    tvm.sum(kernel[k][c][r_kh][r_kw] * G[eps][r_kh] * G[nu][r_kw],
                             axis=[r_kh, r_kw]), name='U')
     return U
 
 @conv2d_winograd_without_filter_transform.register(["cuda", "gpu"])
 def conv2d_winograd_2x2(data, U):
-    N, co, H, W, ci = [util.get_const_int(x) for x in data.shape]
-    co, ko, _, _, ci, ki  = [util.get_const_int(x) for x in U.shape]
-    C = co * ci
-    K = ko * ki
+    N, C, H, W = [util.get_const_int(x) for x in data.shape]
+    _, _, C, K  = [util.get_const_int(x) for x in U.shape]
     HPAD, WPAD = 1,1
     HSTR, WSTR = 1,1
     out_dtype = "float32"
@@ -234,46 +232,47 @@ def schedule_winograd_without_filter_transform(s, conv_op, output_op):
     # inverse transform
     s[A].compute_inline()
     n, k, h, w = s[output].op.axis
-    ML = s.cache_read(M, "local", [output])
-    output_L = s.cache_write(output, "local")
-    ho, hi = s[output].split(h, factor=2)
-    wo, wi = s[output].split(w, factor=2)
-    s[output].reorder(k, n, ho, wo, hi, wi)
-    k = s[output].fuse(k, n)
+    # ML = s.cache_read(M, "local", [output])
+    #output_L = s.cache_write(output, "local")
+    # ho, hi = s[output].split(h, factor=2)
+    # wo, wi = s[output].split(w, factor=2)
+    # s[output].reorder(k, n, ho, wo, hi, wi)
+    # k = s[output].fuse(k, n)
 
-    hoo, hoi = s[output].split(ho, factor=16)
-    woo, woi = s[output].split(wo, factor=16)
-    s[output].bind(hoi, tvm.thread_axis("threadIdx.y"))
-    s[output].bind(woi, tvm.thread_axis("threadIdx.x"))
-    s[output].bind(hoo, tvm.thread_axis("blockIdx.y"))
-    s[output].bind(woo, tvm.thread_axis("blockIdx.x"))
-    s[output].bind(k, tvm.thread_axis("blockIdx.z"))
-    s[output_L].compute_at(s[output], woi)
-    s[ML].compute_at(s[output], woi)
-    
+    # hoo, hoi = s[output].split(ho, factor=16)
+    # woo, woi = s[output].split(wo, factor=16)
+    # s[output].bind(hoi, tvm.thread_axis("threadIdx.y"))
+    # s[output].bind(woi, tvm.thread_axis("threadIdx.x"))
+    # s[output].bind(hoo, tvm.thread_axis("blockIdx.y"))
+    # s[output].bind(woo, tvm.thread_axis("blockIdx.x"))
+    # s[output].bind(k, tvm.thread_axis("blockIdx.z"))
+    # s[output_L].compute_at(s[output], woi)
+    # s[ML].compute_at(s[output], woi)
+
     if conv_op == output_op:
         pass
-        # fused = s[output].fuse(n, k, ho, wo)
-        # s[output].parallel(fused)
-    else:
-        pass
-        # n, k, h, w, kk = s[output_op].op.axis
-        # ho, hi = s[output_op].split(h, factor=8)
-        # wo, wi = s[output_op].split(w, factor=8)
-        # s[output_op].reorder(n, k, ho, wo, hi, wi, kk)
-        # s[output_op].vectorize(kk)
-        # fused = s[output_op].fuse(n, k, ho, wo) 
-        # s[output_op].parallel(fused)
-        # s[conv_op].compute_at(s[output_op], fused)
+    elif conv_op != output_op:
+        n, k, h, w = s[output_op].op.axis
+        ho, hi = s[output_op].split(h, factor=2)
+        wo, wi = s[output_op].split(w, factor=2)
+        s[output_op].reorder(n, k, ho, wo, hi, wi)
+        k = s[output_op].fuse(k, n)        
+        hoo, hoi = s[output_op].split(ho, factor=16)
+        woo, woi = s[output_op].split(wo, factor=16)
+        s[output_op].bind(hoi, tvm.thread_axis("threadIdx.y"))
+        s[output_op].bind(woi, tvm.thread_axis("threadIdx.x"))
+        s[output_op].bind(hoo, tvm.thread_axis("blockIdx.y"))
+        s[output_op].bind(woo, tvm.thread_axis("blockIdx.x"))
+        s[output_op].bind(k, tvm.thread_axis("blockIdx.z"))
+        s[conv_op].compute_at(s[output_op], wi)
         
     return s
 
-@generic.schedule_conv2d_winograd_without_filter_transform.register(["cpu"])
+@generic.schedule_conv2d_winograd_without_filter_transform.register(["cuda", "gpu"])
 def schedule_winograd(outs):
     """Create schedule for tensors"""
     s = tvm.create_schedule([x.op for x in outs])
     output_op = outs[0].op
-
 
     def traverse(op):
         """Traverse operators from computation graph"""
