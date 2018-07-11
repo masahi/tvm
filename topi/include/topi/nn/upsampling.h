@@ -18,6 +18,33 @@ namespace nn {
 using namespace tvm;
 using namespace topi::image;
 
+inline Tensor upsampling_nearest_nchwc(const Tensor& input,
+                                       const Array<Expr>& shape,
+                                       std::string name = "tensor",
+                                      std::string tag = kInjective) {
+  Array<Expr> out_shape;
+  out_shape.push_back(input->shape[0]);
+  out_shape.push_back(input->shape[1]);
+  out_shape.push_back(shape[0]);
+  out_shape.push_back(shape[1]);
+  out_shape.push_back(input->shape[4]);
+
+  Expr h_ratio = shape[0] / input->shape[2];
+  Expr w_ratio = shape[1] / input->shape[3];
+
+  return compute(
+    out_shape, [&](const Array<Var>& indices) {
+    Array<Expr> idx;
+    idx.push_back(indices[0]);
+    idx.push_back(indices[1]);
+    idx.push_back(indices[2] / h_ratio);
+    idx.push_back(indices[3] / w_ratio);
+    idx.push_back(indices[4]);
+
+    return input(idx);
+    }, name, tag);
+}
+ 
 /*!
 * \brief Upsample given tensor to given shape
 *
@@ -36,6 +63,10 @@ inline Tensor upsampling(const Tensor& input,
                          std::string mode = "NEAREST_NEIGHBOR",
                          std::string name = "tensor",
                          std::string tag = kInjective) {
+  if(input.ndim() == 5){
+     std::cout << "call upsampling nchwc\n";
+     return upsampling_nearest_nchwc(input, shape);
+  }
   return resize(input, shape, layout, false, mode);
 }
 

@@ -42,6 +42,7 @@ inline bool UpSamplingInferShape(const nnvm::NodeAttrs& attrs,
   oshape[2] = oshape[2] * param.scale;
   oshape[3] = oshape[3] * param.scale;
   oshape = ConvertLayout(oshape, kNCHW, param.layout);
+  std::cout << "upsampling shape:" << oshape[0] << "," << oshape[1] << "," << oshape[2] << "," << oshape[3] << "," << oshape[4] << std::endl;
   NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_shape, 0, oshape);
 
   return true;
@@ -55,8 +56,20 @@ inline bool UpsamplingLayout(const NodeAttrs& attrs,
   CHECK_EQ(in_layouts->size(), 1U);
   CHECK_EQ(out_layouts->size(), 1U);
   const Layout layout(param.layout);
-  NNVM_ASSIGN_LAYOUT(*in_layouts, 0, layout);
-  NNVM_ASSIGN_LAYOUT(*out_layouts, 0, layout);
+  Layout input = (*in_layouts)[0];
+  if (input.defined()) {
+    CHECK(input.convertible(layout)) << "Invalid input layout " << input;
+    if (input.indexof('W') != layout.indexof('W') ||
+        input.indexof('H') != layout.indexof('H') ||
+        input.contains('w') || input.contains('h')) {
+      input = layout;
+    }
+  } else {
+    input = layout;
+  }
+
+  NNVM_ASSIGN_LAYOUT(*in_layouts, 0, input);
+  NNVM_ASSIGN_LAYOUT(*out_layouts, 0, input);
   return true;
 }
 
@@ -97,7 +110,7 @@ NNVM_REGISTER_OP(upsampling)
     oshape.push_back(out_info[0]->shape[1]);
     oshape.push_back(out_info[0]->shape[2]);
   }
-
+  std::cout << "upsampling ndim: " << inputs[0].ndim() << std::endl;
   return Array<Tensor>{ topi::nn::upsampling(inputs[0], oshape, param.layout, param.method)};
 })
 .set_support_level(2);
