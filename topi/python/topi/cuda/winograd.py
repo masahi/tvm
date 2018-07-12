@@ -231,19 +231,19 @@ def schedule_winograd_without_filter_transform(s, conv_op, output_op):
 
     # inverse transform
     s[A].compute_inline()
-    n, k, h, w = s[output].op.axis
-    ML = s.cache_read(M, "local", [output])
-    output_L = s.cache_write(output, "local")
-    ho, hi = s[output].split(h, factor=2)
-    wo, wi = s[output].split(w, factor=2)
-    s[output].reorder(k, n, ho, wo, hi, wi)
-    k = s[output].fuse(k, n)
-    hoo, hoi = s[output].split(ho, factor=16)
-    woo, woi = s[output].split(wo, factor=16)
-    s[output_L].compute_at(s[output], woi)
-    s[ML].compute_at(s[output], woi)
     
-    if conv_op == output_op:    
+    if conv_op == output_op:
+        n, k, h, w = s[output].op.axis
+        ML = s.cache_read(M, "local", [output])
+        output_L = s.cache_write(output, "local")
+        ho, hi = s[output].split(h, factor=2)
+        wo, wi = s[output].split(w, factor=2)
+        s[output].reorder(k, n, ho, wo, hi, wi)
+        k = s[output].fuse(k, n)
+        hoo, hoi = s[output].split(ho, factor=16)
+        woo, woi = s[output].split(wo, factor=16)
+        s[output_L].compute_at(s[output], woi)
+        s[ML].compute_at(s[output], woi)
         s[output].bind(hoi, tvm.thread_axis("threadIdx.y"))
         s[output].bind(woi, tvm.thread_axis("threadIdx.x"))
         s[output].bind(hoo, tvm.thread_axis("blockIdx.y"))
@@ -263,8 +263,8 @@ def schedule_winograd_without_filter_transform(s, conv_op, output_op):
         s[output_op].bind(woo, tvm.thread_axis("blockIdx.x"))
         s[output_op].bind(k, tvm.thread_axis("blockIdx.z"))
         s[conv_op].set_scope("local")
-        s[conv_op].compute_at(s[output_op], woi)
-        
+        s[conv_op].compute_at(s[output_op], wi)
+
     return s
 
 @generic.schedule_conv2d_winograd_without_filter_transform.register(["cuda", "gpu"])
