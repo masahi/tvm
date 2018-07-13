@@ -50,7 +50,7 @@ def replace_with_winograd_2x2(attrs, inputs, tinfos):
         new_attrs['use_bias'] = attrs.get_bool("use_bias")
         return sym.contrib.conv2d_winograd_without_filter_transform(*copy_inputs, **new_attrs)
 
-    return sym.conv2d(attrs, inputs, tinfos)
+    return sym.conv2d(data=inputs[0], channels=channels, kernel_size=kernel_size, strides=strides, padding=padding, use_bias=attrs.get_bool("use_bias"))
 
 @winograd_filter_transform.register(["cuda", "gpu"])
 def winograd_filter_transform_2x2(kernel):

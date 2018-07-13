@@ -15,7 +15,7 @@ OPT_PASS_LEVEL = {
     "SimplifyInference": 0,
     "PrecomputePrune": 2,
     "OpFusion": 1,
-    "FoldScaleAxis": 3,
+    "FoldScaleAxis": 5,
     "AlterOpLayout": 3,
     "ReplaceConv2dWithWinograd": 4,
 }
