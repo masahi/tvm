@@ -22,10 +22,10 @@ def tvm_callback_cuda_compile(code):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, required=True,
-                        choices=['resnet', 'mobilenet'],
+                        choices=['resnet', 'mobilenet', 'vgg'],
                         help="The model type.")
     parser.add_argument('--target', type=str, required=True,
-                        choices=['cuda', 'rocm', 'opencl', 'metal'],
+                        choices=['cuda', 'rocm', 'opencl', 'metal', 'nvptx'],
                         help="Compilation target.")
     parser.add_argument('--opt-level', type=int, default=1, help="Level of optimization.")
     parser.add_argument('--num-iter', type=int, default=1000, help="Number of iteration during benchmark.")
@@ -43,6 +43,9 @@ def main():
     if args.model == 'resnet':
         net, params = nnvm.testing.resnet.get_workload(
             batch_size=1, image_shape=image_shape)
+    if args.model == 'vgg':
+        net, params = nnvm.testing.vgg.get_workload(
+            batch_size=1, image_shape=image_shape, num_layers=16)
     elif args.model == 'mobilenet':
         net, params = nnvm.testing.mobilenet.get_workload(
             batch_size=1, image_shape=image_shape)
@@ -51,6 +54,7 @@ def main():
 
     if args.target == "cuda":
         unroll = 1400
+        #args.target += " -libs=cudnn"
     else:
         unroll = 128
     with nnvm.compiler.build_config(opt_level=opt_level):
