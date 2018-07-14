@@ -7,6 +7,14 @@ This is an advanced tutorial for writing high performance tunable template for
 NVIDIA GPU. By running auto-tuner on this template, we can outperform the
 vendor provided library CuDNN in many cases.
 """
+import os
+import numpy as np
+import tvm
+import topi
+import topi.testing
+from tvm.contrib.pickle_memoize import memoize
+from topi import util
+from topi.nn import pad
 
 import logging
 import sys
@@ -131,12 +139,14 @@ def conv2d_no_batching(N, H, W, CI, CO, KH, KW, stride, padding):
 # for this template
 
 # logging config (for printing tuning log to screen)
+
+device = "cuda"
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-# the last layer in resnet 
+the last layer in resnet 
 task = autotvm.task.create(conv2d_no_batching,
                            args=(1, 7, 7, 512, 512, 3, 3, (1, 1), (1, 1)),
-                           target='cuda')
+                           target=device)
 print(task.config_space)
 
 # use local gpu, measure 5 times for every config to reduce variance
@@ -148,7 +158,7 @@ measure_option = autotvm.measure_option(mode='local',
 
 # begin tuning, log records to file `cache.tsv`
 tuner = autotvm.tuner.XGBTuner(task)
-tuner.tune(n_trial=20,
+tuner.tune(n_trial=1000,
            measure_option=measure_option,
            callbacks=[autotvm.callback.log_to_file('cache.tsv')])
 
@@ -158,3 +168,50 @@ best_config = dispatch_context.query(task.target, task.workload)
 print("\nBest config:")
 print(best_config)
 
+batch, in_channel, in_size, num_filter, kernel, stride, padding = 1, 512, 7, 512, 3, 1, 1
+in_height = in_width = in_size
+
+A = tvm.placeholder((batch, in_channel, in_height, in_width), name='A')
+W = tvm.placeholder((num_filter, in_channel, kernel, kernel), name='W')
+
+a_shape = util.get_const_tuple(A.shape)
+w_shape = util.get_const_tuple(W.shape)
+dtype = "float32"
+
+def get_ref_data():
+    a_np = np.random.uniform(size=a_shape).astype(dtype)
+    w_np = np.random.uniform(size=w_shape).astype(dtype)
+    b_np = topi.testing.conv2d_nchw_python(a_np, w_np, stride, padding)
+    return a_np, w_np, b_np
+
+a_np, w_np, b_np = get_ref_data()
+
+ctx = tvm.context(device, 0)
+with tvm.target.create(device):
+    B = topi.nn.conv2d(A, W, stride, padding, layout='NCHW')
+    s1 = topi.generic.schedule_conv2d_nchw([B])
+
+a = tvm.nd.array(a_np, ctx)
+w = tvm.nd.array(w_np, ctx)
+b = tvm.nd.array(np.zeros(util.get_const_tuple(B.shape), dtype=B.dtype), ctx)
+with tvm.build_config(auto_unroll_max_step=1400,
+                      unroll_explicit=(device != "cuda")):
+    func = tvm.build(s1, [A, W, B], device)
+    #print(tvm.lower(s1, [A, W, B], simple_mode=True))
+    func(a, w, b)
+    np.testing.assert_allclose(b.asnumpy(), b_np, rtol=1e-5)
+    num_runs = 100
+    timer = func.time_evaluator(func.entry_name, ctx, number=num_runs)
+    print("ref time: ", timer(a, w, b).mean * 1000)
+
+with autotvm.apply_history_best('cache.tsv'):
+    with tvm.target.create(device):
+        s, arg_bufs = conv2d_no_batching(1, 7, 7, 512, 512, 3, 3, (1, 1), (1, 1))
+        func = tvm.build(s, arg_bufs, device)
+        # print(tvm.lower(s, arg_bufs, simple_mode=True))
+        # print(arg_bufs)
+        func(a, w, b)
+        np.testing.assert_allclose(b.asnumpy(), b_np, rtol=1e-5)
+        num_runs = 100
+        timer = func.time_evaluator(func.entry_name, ctx, number=num_runs)
+        print("autotune time: ", timer(a, w, b).mean * 1000)
