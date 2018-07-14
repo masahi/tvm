@@ -15,7 +15,7 @@ OPT_PASS_LEVEL = {
     "SimplifyInference": 0,
     "PrecomputePrune": 2,
     "OpFusion": 1,
-    "FoldScaleAxis": 5,
+    "FoldScaleAxis": 3,
     "AlterOpLayout": 3,
     "ReplaceConv2dWithWinograd": 4,
 }
@@ -290,7 +290,6 @@ def build(graph, target=None, shape=None, dtype="float32",
 
     # Precompute prune
     if params and cfg.pass_enabled("PrecomputePrune"):
-        print(target.target_name)
         graph, params = precompute_prune(graph, params, target.target_name)
         shape, dtype = _update_shape_dtype(shape, dtype, params)
     # Operator Fusion and generation
