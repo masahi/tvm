@@ -27,7 +27,7 @@ def const_array(data, name):
 @conv2d_replace_with_winograd.register(["cuda","gpu"])
 def replace_with_winograd_2x2(attrs, inputs, tinfos):
     import nnvm.symbol as sym
-    print("replace_with_winograd_2x2 called")
+
     copy_inputs = [s for s in inputs]
     #new_attrs = {k : attrs[k] for k in attrs.keys()}
     padding = attrs.get_int_tuple("padding")
@@ -39,6 +39,7 @@ def replace_with_winograd_2x2(attrs, inputs, tinfos):
     in_channel = tinfos[0].shape[1].value
 
     if groups == 1 and kernel_size == (3, 3) and strides == (1, 1) and padding == (1, 1) and channels >= 8 and in_channel >= 8:
+        print("replace conv2d with winograd 2x2")
         new_attrs = {}
         copy_inputs[1] = sym.contrib.winograd_filter_transform(inputs[1], tile_size=4, use_gpu=True)
         new_attrs['use_gpu'] = True

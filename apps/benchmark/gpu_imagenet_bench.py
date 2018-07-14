@@ -13,6 +13,7 @@ import nnvm.compiler
 import nnvm.testing
 from tvm.contrib import util, nvcc
 from tvm.contrib import graph_runtime as runtime
+import logging
 
 @tvm.register_func
 def tvm_callback_cuda_compile(code):
@@ -25,10 +26,10 @@ def main():
                         choices=['resnet', 'mobilenet', 'vgg'],
                         help="The model type.")
     parser.add_argument('--target', type=str, required=True,
-                        choices=['cuda', 'rocm', 'opencl', 'metal', 'nvptx'],
+                        choices=['cuda', 'rocm', 'opencl', 'metal', 'nvptx', 'llvm'],
                         help="Compilation target.")
     parser.add_argument('--opt-level', type=int, default=1, help="Level of optimization.")
-    parser.add_argument('--num-iter', type=int, default=1000, help="Number of iteration during benchmark.")
+    parser.add_argument('--num-iter', type=int, default=100, help="Number of iteration during benchmark.")
     parser.add_argument('--repeat', type=int, default=1, help="Number of repeative times.")
     args = parser.parse_args()
     opt_level = args.opt_level
@@ -40,26 +41,25 @@ def main():
 
     data_shape = (batch_size,) + image_shape
     out_shape = (batch_size, num_classes)
-    if args.model == 'resnet':
+    if args.model == "resnet":
         net, params = nnvm.testing.resnet.get_workload(
-            batch_size=1, image_shape=image_shape)
-    if args.model == 'vgg':
+            batch_size=batch_size, image_shape=image_shape, num_layers=18)
+    elif args.model == "vgg":
         net, params = nnvm.testing.vgg.get_workload(
             batch_size=1, image_shape=image_shape, num_layers=16)
-    elif args.model == 'mobilenet':
-        net, params = nnvm.testing.mobilenet.get_workload(
-            batch_size=1, image_shape=image_shape)
-    else:
-        raise ValueError('no benchmark prepared for {}.'.format(args.model))
 
-    if args.target == "cuda":
+    if args.target == "llvm":
+        args.target += " -mcpu=core-avx2"
+    if args.target in ["cuda"]:
         unroll = 1400
-        #args.target += " -libs=cudnn"
+#        args.target += " -libs=cudnn"
     else:
-        unroll = 128
+        unroll = 1400
+
+    logging.basicConfig(level=logging.INFO)
     with nnvm.compiler.build_config(opt_level=opt_level):
         with tvm.build_config(auto_unroll_max_step=unroll,
-                              unroll_explicit=(args.target != "cuda")):
+                                unroll_explicit=(args.target != "cuda")):
             graph, lib, params = nnvm.compiler.build(
                 net, args.target, shape={"data": data_shape}, params=params)
 

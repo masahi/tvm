@@ -39,6 +39,7 @@ def replace_with_winograd_4x4(attrs, inputs, tinfos):
     in_channel = tinfos[0].shape[1].value
 
     if groups == 1 and kernel_size == (3, 3) and strides == (1, 1) and padding == (1, 1) and channels >= 8 and in_channel >= 8:
+        print("replace conv2d with winograd 4x4")
         new_attrs = {}
         copy_inputs[1] = sym.contrib.winograd_filter_transform(inputs[1], tile_size=6, use_gpu=False)
         new_attrs['use_gpu'] = False
@@ -112,18 +113,30 @@ def conv2d_winograd_4x4(data, U):
     nH, nW = (H + m-1) // m, (W + m-1) // m
     P = N * nH * nW
     bna, bnb = 8, 8
+    P_round = (P + bnb - 1) // bnb * bnb
+    assert C % bna == 0, P_round % bnb == 0
 
     # transform image
     B = const_array(B_data, 'B')
     r_eps = tvm.reduce_axis((0, alpha), 'r_eps')
     r_nu = tvm.reduce_axis((0, alpha), 'r_nu')
-    V = tvm.compute((P // bnb, C // bna, alpha, alpha, bnb, bna), lambda b, c, eps, nu, bb, cc:
-                    tvm.sum(data_pad[(b*bnb+bb) // (nH*nW)][c][(b*bnb+bb) // nW % nH * m + r_eps][(b*bnb+bb) % nW * m + r_nu][cc] * B[r_eps][eps] * B[r_nu][nu],
-                            axis=[r_eps, r_nu]), name='V')
+
+    if P == P_round:
+        V = tvm.compute((P // bnb, C // bna, alpha, alpha, bnb, bna), lambda b, c, eps, nu, bb, cc:
+                        tvm.sum(data_pad[(b*bnb+bb) // (nH*nW)][c][(b*bnb+bb) // nW % nH * m + r_eps][(b*bnb+bb) % nW * m + r_nu][cc] * \
+                                B[r_eps][eps] * B[r_nu][nu], axis=[r_eps, r_nu]), name='V')
+    else:
+        input_tile = tvm.compute((P_round // bnb, C // bna, alpha, alpha, bnb, bna), lambda b, c, eps, nu, bb, cc: \
+                                     tvm.select(b * bnb + bb < P,\
+                                                    data_pad[(b*bnb+bb) // (nH*nW)][c][(b*bnb+bb) // nW % nH * m + eps][(b*bnb+bb) % nW * m + nu][cc], \
+                                                    tvm.const(0, data_pad.dtype)), name='d')
+        V = tvm.compute((P_round // bnb, C // bna, alpha, alpha, bnb, bna), lambda b, c, eps, nu, bb, cc:\
+                            tvm.sum(input_tile[b][c][r_eps][r_nu][bb][cc] * \
+                                        B[r_eps][eps] * B[r_nu][nu], axis=[r_eps, r_nu]), name='V')
     
     # batch gemm
     c = tvm.reduce_axis((0, C), name='c')
-    M = tvm.compute((P //bnb, K // bna, alpha, alpha, bnb, bna), lambda b, k, eps, nu, bb, kk:
+    M = tvm.compute((P_round //bnb, K // bna, alpha, alpha, bnb, bna), lambda b, k, eps, nu, bb, kk:
                     tvm.sum(V[b][c // bna][eps][nu][bb][c % bna] *
                             U[c // bna][k][eps][nu][c % bna][kk], axis=c), name='M')
     
@@ -145,11 +158,23 @@ def schedule_winograd_without_filter_transform(s, conv_op, output_op):
     output = conv_op.output(0)
     M, A = s[output].op.input_tensors
     V, U = s[M].op.input_tensors
-    data_pad, B = s[V].op.input_tensors
+    
+    N, c, H, W, cc = output.shape
+    m = 4
+    nH, nW = (H.value + m-1) // m, (W.value + m-1) // m
+    P = N.value * nH * nW
+
+    if P % 8 == 0:
+        data_pad, B = s[V].op.input_tensors
+    else:
+        input_tile, B = s[V].op.input_tensors
+        data_pad = s[input_tile].op.input_tensors[0]
     data = s[data_pad].op.input_tensors[0]
 
     # transform image
-    s[data_pad].compute_inline()    
+    s[data_pad].compute_inline()
+    if P % 8 != 0: s[input_tile].compute_inline()
+    
     s[B].compute_inline()
     b, c, eps, nu, bb, cc = s[V].op.axis
     r_eps, r_nu = s[V].op.reduce_axis
