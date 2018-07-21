@@ -8,6 +8,7 @@
 #include <dmlc/memory_io.h>
 #include <dmlc/json.h>
 #include <numeric>
+#include <chrono>
 #include "./graph_runtime.h"
 
 namespace tvm {
@@ -52,6 +53,23 @@ class GraphRuntime : public ModuleNode {
   }
   void Run() {
     // setup the array and requirements.
+    // for (size_t i = 0; i < op_execs_.size(); ++i) {
+    //   auto node = nodes_[i];
+    //   auto param = node.param;
+    //   auto func_name = param.func_name;
+
+    //   int n_iter = 100;
+    //   if (op_execs_[i]) {
+    //     op_execs_[i]();              
+    //     auto t0 = std::chrono::system_clock::now();
+    //     for(int j = 0; j < n_iter; ++j){
+    //          op_execs_[i]();
+    //     }
+    //     auto t1 = std::chrono::system_clock::now();
+    //     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1-t0).count() / (double)n_iter;
+    //     LOG(INFO) << "Execute " << func_name << " took " << elapsed_ms << " msec.";
+    //   }
+    // }          
     for (size_t i = 0; i < op_execs_.size(); ++i) {
       if (op_execs_[i]) op_execs_[i]();
     }
