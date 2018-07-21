@@ -58,8 +58,8 @@ def main():
 
     logging.basicConfig(level=logging.INFO)
     with nnvm.compiler.build_config(opt_level=opt_level):
-        with tvm.build_config(auto_unroll_max_step=unroll,
-                                unroll_explicit=(args.target != "cuda")):
+        # with tvm.build_config(auto_unroll_max_step=unroll,
+        #                         unroll_explicit=(args.target != "cuda")):
             graph, lib, params = nnvm.compiler.build(
                 net, args.target, shape={"data": data_shape}, params=params)
 

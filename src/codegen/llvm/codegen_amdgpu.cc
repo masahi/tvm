@@ -153,6 +153,79 @@ inline int DetectROCMComputeVersion(const std::string& target) {
   return 803;
 }
 
+std::unordered_map<std::string, std::string> GenerateKernels(Array<LoweredFunc> funcs, std::string target){
+  std::unordered_map<std::string, std::string> kernel_map;
+  CHECK(target.length() >= 4 &&
+        target.substr(0, 4) == "rocm");
+  std::ostringstream config;
+  config << "-mtriple=amdgcn-amd-amdhsa-hcc -mcpu=gfx"
+         << DetectROCMComputeVersion(target)
+         << target.substr(4, target.length() - 4);
+  llvm::TargetMachine* tm = GetLLVMTargetMachine(config.str());
+
+  const auto *find_rocm_bitcodes =
+      tvm::runtime::Registry::Get("tvm_callback_rocm_bitcode_path");
+  Array<Expr> bitcode_files = (*find_rocm_bitcodes)();
+  
+  for (LoweredFunc f :  funcs) {  
+    std::unique_ptr<CodeGenAMDGPU> cg(new CodeGenAMDGPU());
+    std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext());
+    cg->Init(funcs[0]->name, tm, ctx.get(), false, false);
+    cg->AddFunction(f);
+    
+    for (auto &bitcode : bitcode_files) {
+      std::string path = bitcode.as<StringImm>()->value;
+      llvm::SMDiagnostic err;
+      std::unique_ptr<llvm::Module> mlib = llvm::parseIRFile(path, err, *ctx);
+      if (mlib.get() == nullptr) {
+        std::string msg = err.getMessage();
+        LOG(FATAL) << "Fail to load bitcode file " << path << "\n"
+                   << "line " << err.getLineNo() << ":" << msg;
+      }
+      mlib->setTargetTriple(tm->getTargetTriple().str());
+      mlib->setDataLayout(tm->createDataLayout());
+      for (llvm::Function &f : mlib->functions()) {
+        f.addFnAttr(llvm::Attribute::AlwaysInline);
+      }
+      cg->AddLinkModule(std::move(mlib));
+    }
+    std::unique_ptr<llvm::Module> module = cg->Finish();
+    llvm::SmallString<8> dataObj;
+    llvm::raw_svector_ostream destObj(dataObj);
+    destObj.SetUnbuffered();
+  #if TVM_LLVM_VERSION <= 60
+    std::unique_ptr<llvm::Module> mObj = llvm::CloneModule(module.get());
+  #else
+    std::unique_ptr<llvm::Module> mObj = llvm::CloneModule(*module.get());
+  #endif
+    llvm::legacy::PassManager pass;
+  
+  #if TVM_LLVM_VERSION <= 60
+    CHECK(tm->addPassesToEmitFile(
+              pass, destObj, llvm::TargetMachine::CGFT_ObjectFile) == 0)
+              << "Cannot emit target CGFT_ObjectFile";
+  #else
+    CHECK(tm->addPassesToEmitFile(
+              pass, destObj, nullptr, llvm::TargetMachine::CGFT_ObjectFile) == 0)
+              << "Cannot emit target CGFT_ObjectFile";
+  #endif
+    pass.run(*mObj);
+    std::string obj(dataObj.begin(), dataObj.end());
+  
+    const auto* f_link = tvm::runtime::Registry::Get("tvm_callback_rocm_link");
+    CHECK(f_link != nullptr) << "Require tvm_callback_rocm_link to exist, do import tvm.contrib.rocm";
+  
+    TVMByteArray arr;
+    arr.data = &obj[0];
+    arr.size = obj.length();
+  
+    std::string hsaco = (*f_link)(arr);
+    kernel_map[f->name] = hsaco;
+  }
+
+  return kernel_map;
+}
+
 runtime::Module BuildAMDGPU(Array<LoweredFunc> funcs, std::string target) {
   CHECK(target.length() >= 4 &&
         target.substr(0, 4) == "rocm");
@@ -229,17 +302,10 @@ runtime::Module BuildAMDGPU(Array<LoweredFunc> funcs, std::string target) {
 #endif
   passAsm.run(*mAsm);
   std::string assembly(dataAsm.begin(), dataAsm.end());
-
-  const auto* f = tvm::runtime::Registry::Get("tvm_callback_rocm_link");
-  CHECK(f != nullptr) << "Require tvm_callback_rocm_link to exist, do import tvm.contrib.rocm";
-
-  TVMByteArray arr;
-  arr.data = &obj[0];
-  arr.size = obj.length();
-
-  std::string hsaco = (*f)(arr);
   std::string ll(data_ll.begin(), data_ll.end());
-  return ROCMModuleCreate(hsaco, "hsaco", ExtractFuncInfo(funcs), ll, assembly);
+  
+  auto kernel_map = GenerateKernels(funcs, target);
+  return ROCMModuleCreate(kernel_map, "hsaco", ExtractFuncInfo(funcs), ll, assembly);
 }
 
 TVM_REGISTER_API("codegen.build_rocm")

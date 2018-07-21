@@ -24,20 +24,20 @@ namespace runtime {
 // The modules will be lazily loaded
 class ROCMModuleNode : public runtime::ModuleNode {
  public:
-  explicit ROCMModuleNode(std::string data,
+  explicit ROCMModuleNode(const std::unordered_map<std::string, std::string>& data,
                           std::string fmt,
                           std::unordered_map<std::string, FunctionInfo> fmap,
                           std::string hip_source,
                           std::string assembly)
     : data_(data), fmt_(fmt), fmap_(fmap), hip_source_(hip_source), assembly_(assembly) {
-    std::fill(module_.begin(), module_.end(), nullptr);
+     //std::fill(module_.begin(), module_.end(), nullptr);
   }
   // destructor
   ~ROCMModuleNode() {
-    for (size_t i = 0; i < module_.size(); ++i) {
-      if (module_[i] != nullptr) {
-        ROCM_CALL(hipSetDevice(static_cast<int>(i)));
-        ROCM_DRIVER_CALL(hipModuleUnload(module_[i]));
+    for (auto m: module_) {
+      if (m.second != nullptr) {
+        ROCM_CALL(hipSetDevice(static_cast<int>(0)));
+        ROCM_DRIVER_CALL(hipModuleUnload(m.second));
       }
     }
   }
@@ -58,7 +58,6 @@ class ROCMModuleNode : public runtime::ModuleNode {
   }
 
   std::string GetSource(const std::string& format) final {
-    if (format == fmt_) { return data_; }
     if (format == "llvm") { return hip_source_; }
     if (format == "asm") { return assembly_; }
     return "";
@@ -69,11 +68,12 @@ class ROCMModuleNode : public runtime::ModuleNode {
     std::lock_guard<std::mutex> lock(mutex_);
     // must recheck under the lock scope
 
-    if (module_[device_id] == nullptr) {
-      ROCM_DRIVER_CALL(hipModuleLoadData(&(module_[device_id]), data_.c_str()));
+    if (module_.find(func_name) == module_.end()) {
+      CHECK(data_.find(func_name) != data_.end());
+      ROCM_DRIVER_CALL(hipModuleLoadData(&(module_[func_name]), data_[func_name].c_str()));
     }
     hipFunction_t func;
-    hipError_t result = hipModuleGetFunction(&func, module_[device_id], func_name.c_str());
+    hipError_t result = hipModuleGetFunction(&func, module_[func_name], func_name.c_str());
     if (result != hipSuccess) {
       LOG(FATAL)
           << "ROCMError: hipModuleGetFunction " << func_name
@@ -81,34 +81,10 @@ class ROCMModuleNode : public runtime::ModuleNode {
     }
     return func;
   }
-  // get a global var from primary context in device_id
-  hipDeviceptr_t GetGlobal(int device_id,
-                        const std::string& global_name,
-                        size_t expect_nbytes) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    // must recheck under the lock scope
-    if (module_[device_id] == nullptr) {
-      ROCM_DRIVER_CALL(hipModuleLoadData(&(module_[device_id]), data_.c_str()));
-    }
-    hipDeviceptr_t global = nullptr;
-    size_t nbytes = 0;
-
-    hipError_t result = hipSuccess;
-    // ROCM doesn't support hipModuleGetGlobal yet.
-    // hipError_t result = hipModuleGetGlobal(&global, &nbytes,
-    //                                    module_[device_id], global_name.c_str());
-    CHECK_EQ(nbytes, expect_nbytes);
-    if (result != hipSuccess) {
-      LOG(FATAL)
-          << "ROCMError: hipModuleGetGlobal " << global_name
-          << " failed with error: " << hipGetErrorString(result);
-    }
-    return global;
-  }
 
  private:
   // the binary data
-  std::string data_;
+  std::unordered_map<std::string, std::string> data_;
   // The format
   std::string fmt_;
   // function information table.
@@ -117,8 +93,7 @@ class ROCMModuleNode : public runtime::ModuleNode {
   std::string hip_source_;
   // The gcn asm.
   std::string assembly_;
-  // the internal modules per GPU, to be lazily initialized.
-  std::array<hipModule_t, kMaxNumGPUs> module_;
+  std::unordered_map<std::string, hipModule_t> module_;
   // internal mutex when updating the module
   std::mutex mutex_;
 };
@@ -168,6 +143,7 @@ class ROCMWrappedFunc {
         wl.block_dim(2),
         0, strm, nullptr,
         reinterpret_cast<void**>(&config)));
+    ROCM_CALL(hipStreamSynchronize(strm));
   }
 
  private:
@@ -200,7 +176,7 @@ PackedFunc ROCMModuleNode::GetFunction(
 }
 
 Module ROCMModuleCreate(
-    std::string data,
+    const std::unordered_map<std::string, std::string>& data,
     std::string fmt,
     std::unordered_map<std::string, FunctionInfo> fmap,
     std::string hip_source,
@@ -208,6 +184,15 @@ Module ROCMModuleCreate(
   std::shared_ptr<ROCMModuleNode> n =
     std::make_shared<ROCMModuleNode>(data, fmt, fmap, hip_source, assembly);
   return Module(n);
+}
+        
+Module ROCMModuleCreate(
+    std::string data,
+    std::string fmt,
+    std::unordered_map<std::string, FunctionInfo> fmap,
+    std::string hip_source,
+    std::string assembly) {
+  return ROCMModuleCreate({data}, fmt, fmap, hip_source, assembly); 
 }
 
 Module ROCMModuleLoadBinary(void* strm) {

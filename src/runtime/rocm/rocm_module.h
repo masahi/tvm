@@ -18,6 +18,13 @@ namespace runtime {
 /*! \brief Maximum number of GPU supported in ROCMModule */
 static constexpr const int kMaxNumGPUs = 32;
 
+Module ROCMModuleCreate(
+    const std::unordered_map<std::string, std::string>& data,
+    std::string fmt,
+    std::unordered_map<std::string, FunctionInfo> fmap,
+    std::string hip_source,
+    std::string assembly); 
+
 /*!
  * \brief create a rocm module from data.
  *
