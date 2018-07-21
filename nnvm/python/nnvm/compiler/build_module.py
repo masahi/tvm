@@ -108,7 +108,7 @@ def _lower(sch, inputs, func_name, graph):
     # pylint: disable=broad-except
     try:
         unroll_factor = 128
-        if len(inputs) == 4 and inputs[1].shape[0].value == 4 and inputs[1].shape[1].value == 4:
+        if len(inputs) > 2 and inputs[1].shape[0].value == 4 and inputs[1].shape[1].value == 4:
             unroll_factor = 1400
         target = tvm.target.current_target().target_name
         with tvm.build_config(auto_unroll_max_step=unroll_factor,
