@@ -37,9 +37,10 @@ def replace_with_winograd_4x4(attrs, inputs, tinfos):
     channels = attrs.get_int("channels")
     kernel_size = attrs.get_int_tuple("kernel_size")    
     in_channel = tinfos[0].shape[1].value
+    in_size = tinfos[0].shape[2].value
 
-    if groups == 1 and kernel_size == (3, 3) and strides == (1, 1) and padding == (1, 1) and channels >= 8 and in_channel >= 8:
-        print("replace conv2d with winograd 4x4")
+    if groups == 1 and kernel_size == (3, 3) and strides == (1, 1) and padding == (1, 1) and channels >= 8 and in_channel >= 8 and in_size >= 16:
+        print("replacing conv2d with winograd 4x4")
         new_attrs = {}
         copy_inputs[1] = sym.contrib.winograd_filter_transform(inputs[1], tile_size=6, use_gpu=False)
         new_attrs['use_gpu'] = False
@@ -77,6 +78,110 @@ def winograd_filter_transform_4x4(kernel):
                             axis=[r_kh, r_kw]), name='U')
     return U
 
+def decl_V_minimal(data_pad, P, C, alpha, bna, bnb, nH, nW, m):
+    def compute_temp(b, c, eps, nu, cc):
+        temp_expr = {}
+        batch_index = b // (nH*nW)
+        h = b // nW % nH * m
+        w = b % nW * m
+        for j in range(6):
+            t0 = data_pad[batch_index][c][h+4][w+j][cc] - data_pad[batch_index][c][h+2][w+j][cc]*4.0
+            t1 = data_pad[batch_index][c][h+3][w+j][cc] - data_pad[batch_index][c][h+1][w+j][cc]*4.0
+            t2 = data_pad[batch_index][c][h+4][w+j][cc] - data_pad[batch_index][c][h+2][w+j][cc]
+            t3 = data_pad[batch_index][c][h+3][w+j][cc] - data_pad[batch_index][c][h+1][w+j][cc]
+            temp_expr[(0, j)] = data_pad[batch_index][c][h+0][w+j][cc] * 4.0 - data_pad[batch_index][c][h+2][w+j][cc] * 5.0 + data_pad[batch_index][c][h+4][w+j][cc]
+            temp_expr[(1, j)] = t0 + t1
+            temp_expr[(2, j)] = t0 - t1
+            temp_expr[(3, j)] = t2 + t3*2.0
+            temp_expr[(4, j)] = t2 - t3*2.0
+            temp_expr[(5, j)] = data_pad[batch_index][c][h+1][w+j][cc] * 4.0 - data_pad[batch_index][c][h+3][w+j][cc] * 5.0 + data_pad[batch_index][c][h+5][w+j][cc]
+
+        now = tvm.const(0.0, "float32")
+        for ii in range(alpha):
+            for jj in range(alpha):
+                now = tvm.select(tvm.all(eps == ii, nu == jj),
+                                 temp_expr[(ii, jj)],
+                                 now)
+        return now
+
+    temp = tvm.compute((P, C // bna, alpha, alpha, bna), compute_temp, name="temp_V")
+
+    def compute_V(b, c, eps, nu, cc):
+        v_expr = {}
+        for i in range(6):
+            t0 = temp[b][c][i][4][cc] - temp[b][c][i][2][cc]*4.0
+            t1 = temp[b][c][i][3][cc] - temp[b][c][i][1][cc]*4.0
+            t2 = temp[b][c][i][4][cc] - temp[b][c][i][2][cc]
+            t3 = temp[b][c][i][3][cc] - temp[b][c][i][1][cc]
+            v_expr[(i, 0)] = temp[b][c][i][0][cc] * 4.0 - temp[b][c][i][2][cc] * 5.0 + temp[b][c][i][4][cc]
+            v_expr[(i, 1)] = t0 + t1
+            v_expr[(i, 2)] = t0 - t1
+            v_expr[(i, 3)] = t2 + t3*2.0
+            v_expr[(i, 4)] = t2 - t3*2.0
+            v_expr[(i, 5)] = temp[b][c][i][1][cc] * 4.0 - temp[b][c][i][3][cc] * 5.0 + temp[b][c][i][5][cc]
+
+        now = tvm.const(0.0, "float32")
+        for ii in range(6):
+            for jj in range(6):
+                now = tvm.select(tvm.all(eps == ii, nu == jj),
+                                 v_expr[(ii, jj)],
+                                 now)
+        return now
+
+    V = tvm.compute((P, C // bna, alpha, alpha, bna), compute_V, name="V")
+    return V
+
+def decl_output_minimal(M, N, K, H, W, P, alpha, bna, bnb, nH, nW, m):
+
+    def compute_temp(b, k, eps, nu, kk):
+        temp_expr = {}
+        for j in range(6):
+            t0 =  M[b][k][1][j][kk] + M[b][k][2][j][kk]
+            t1 =  M[b][k][3][j][kk] + M[b][k][4][j][kk]
+            t2 =  M[b][k][1][j][kk] - M[b][k][2][j][kk]
+            t3 =  M[b][k][3][j][kk] - M[b][k][4][j][kk]
+            temp_expr[(0, j)] = t0 + t1 + M[b][k][0][j][kk]
+            temp_expr[(1, j)] = t2 + t3*2.0
+            temp_expr[(2, j)] = t0 + t1*4.0
+            temp_expr[(3, j)] = t2 + t3*8.0 + M[b][k][5][j][kk]
+
+        now = tvm.const(0.0, "float32")
+        for ii in range(4):
+            for jj in range(6):
+                now = tvm.select(tvm.all(eps == ii, nu == jj),
+                                 temp_expr[(ii, jj)],
+                                 now)
+        return now
+
+    temp = tvm.compute((P, K // bna, m, alpha, bna), compute_temp, name="temp_Y")
+
+    def compute_output(b, k, eps, nu, kk):
+        output_expr = {}
+        for i in range(4):
+            t0 =  temp[b][k][i][1][kk] + temp[b][k][i][2][kk]
+            t1 =  temp[b][k][i][3][kk] + temp[b][k][i][4][kk]
+            t2 =  temp[b][k][i][1][kk] - temp[b][k][i][2][kk]
+            t3 =  temp[b][k][i][3][kk] - temp[b][k][i][4][kk]
+            output_expr[(i, 0)] = t0 + t1 + temp[b][k][i][0][kk]
+            output_expr[(i, 1)] = t2 + t3 * 2.0
+            output_expr[(i, 2)] = t0 + t1 * 4.0
+            output_expr[(i, 3)] = t2 + t3 * 8.0 + temp[b][k][i][5][kk]
+
+        now = tvm.const(0.0, "float32")
+        for ii in range(4):
+            for jj in range(4):
+                now = tvm.select(tvm.all(eps == ii, nu == jj),
+                                 output_expr[(ii, jj)],
+                                 now)
+        return now
+
+    Y = tvm.compute((P, K // bna, m, m, bna), compute_output, name="Y")
+    output = tvm.compute((N, K // bna, H, W, bna), lambda n, k, h, w, kk:
+                         Y[n * nH * nW + (h//m) * nW + w//m][k][h % m][w % m][kk],
+                         name='output', tag='conv2d_winograd')
+    
+    return output
+
 @conv2d_winograd_without_filter_transform.register("cpu")
 def conv2d_winograd_4x4(data, U):
     N, co, H, W, ci = [util.get_const_int(x) for x in data.shape]
@@ -89,24 +194,6 @@ def conv2d_winograd_4x4(data, U):
 
     data_pad = pad(data, (0, 0, HPAD, WPAD, 0), name="data_pad")
 
-    B_data = np.array([
-        [4, 0, 0, 0, 0, 0],
-        [0, -4, 4, -2, 2, 4],
-        [-5, -4, -4, -1, -1, 0],
-        [0, 1, -1, 2, -2, -5],
-        [1, 1, 1, 1, 1, 0],
-        [0, 0, 0, 0, 0, 1],
-    ], out_dtype)
-
-    A_data = np.array([
-        [1, 0, 0, 0],
-        [1, 1, 1, 1],
-        [1, -1, 1, -1],
-        [1, 2, 4, 8],
-        [1, -2, 4, -8],
-        [0, 0, 0, 1]
-    ], out_dtype)
-    
     m = 4
     r = 3
     alpha = m + r - 1
@@ -117,36 +204,16 @@ def conv2d_winograd_4x4(data, U):
     assert C % bna == 0, P_round % bnb == 0
 
     # transform image
-    B = const_array(B_data, 'B')
-    r_eps = tvm.reduce_axis((0, alpha), 'r_eps')
-    r_nu = tvm.reduce_axis((0, alpha), 'r_nu')
+    V = decl_V_minimal(data_pad, P, C, alpha, bna, bnb, nH, nW, m)
 
-    if P == P_round:
-        V = tvm.compute((P // bnb, C // bna, alpha, alpha, bnb, bna), lambda b, c, eps, nu, bb, cc:
-                        tvm.sum(data_pad[(b*bnb+bb) // (nH*nW)][c][(b*bnb+bb) // nW % nH * m + r_eps][(b*bnb+bb) % nW * m + r_nu][cc] * \
-                                B[r_eps][eps] * B[r_nu][nu], axis=[r_eps, r_nu]), name='V')
-    else:
-        input_tile = tvm.compute((P_round // bnb, C // bna, alpha, alpha, bnb, bna), lambda b, c, eps, nu, bb, cc: \
-                                     tvm.select(b * bnb + bb < P,\
-                                                    data_pad[(b*bnb+bb) // (nH*nW)][c][(b*bnb+bb) // nW % nH * m + eps][(b*bnb+bb) % nW * m + nu][cc], \
-                                                    tvm.const(0, data_pad.dtype)), name='d')
-        V = tvm.compute((P_round // bnb, C // bna, alpha, alpha, bnb, bna), lambda b, c, eps, nu, bb, cc:\
-                            tvm.sum(input_tile[b][c][r_eps][r_nu][bb][cc] * \
-                                        B[r_eps][eps] * B[r_nu][nu], axis=[r_eps, r_nu]), name='V')
-    
     # batch gemm
     c = tvm.reduce_axis((0, C), name='c')
-    M = tvm.compute((P_round //bnb, K // bna, alpha, alpha, bnb, bna), lambda b, k, eps, nu, bb, kk:
-                    tvm.sum(V[b][c // bna][eps][nu][bb][c % bna] *
+    M = tvm.compute((P, K // bna, alpha, alpha, bna), lambda b, k, eps, nu, kk:
+                    tvm.sum(V[b][c // bna][eps][nu][c % bna] *
                             U[c // bna][k][eps][nu][c % bna][kk], axis=c), name='M')
-    
+
     # inverse transform
-    A = const_array(A_data, 'A')
-    r_eps = tvm.reduce_axis((0, alpha), 'r_eps')
-    r_nu = tvm.reduce_axis((0, alpha), 'r_nu')
-    output = tvm.compute((N, K // bna, H, W, bna), lambda n, k, h, w, kk: 
-                    tvm.sum(M[(n * nH * nW + (h//m) * nW + w//m)//bna][k][r_eps][r_nu][(n * nH * nW + (h//m) * nW + w//m)%bna][kk] * A[r_eps][h % m] * A[r_nu][w % m],
-                            axis=[r_eps, r_nu]), name='output', tag="conv2d_winograd")
+    output = decl_output_minimal(M, N, K, H, W, P, alpha, bna, bnb, nH, nW, m)
     
     return output
 
@@ -156,68 +223,75 @@ def schedule_winograd_weight_transform(outs):
 
 def schedule_winograd_without_filter_transform(s, conv_op, output_op):
     output = conv_op.output(0)
-    M, A = s[output].op.input_tensors
+    Y = s[output].op.input_tensors[0]    
+    temp_output_transform = s[Y].op.input_tensors[0]
+    M = s[temp_output_transform].op.input_tensors[0]
     V, U = s[M].op.input_tensors
+    temp_input_transform = s[V].op.input_tensors[0]
+    data_pad = s[temp_input_transform].op.input_tensors[0]
+
+    b_factor = 8
+    P = V.shape[0].value
+    if P == 16:
+        b_factor = 2
     
-    N, c, H, W, cc = output.shape
-    m = 4
-    nH, nW = (H.value + m-1) // m, (W.value + m-1) // m
-    P = N.value * nH * nW
-
-    if P % 8 == 0:
-        data_pad, B = s[V].op.input_tensors
-    else:
-        input_tile, B = s[V].op.input_tensors
-        data_pad = s[input_tile].op.input_tensors[0]
-    data = s[data_pad].op.input_tensors[0]
-
     # transform image
-    s[data_pad].compute_inline()
-    if P % 8 != 0: s[input_tile].compute_inline()
-    
-    s[B].compute_inline()
-    b, c, eps, nu, bb, cc = s[V].op.axis
-    r_eps, r_nu = s[V].op.reduce_axis
-    s[V].reorder(b, c, bb, cc, eps, nu, r_nu, r_eps)
+    s[data_pad].compute_inline()    
+    b, c, eps, nu, cc = s[V].op.axis
+    bo, bi = s[V].split(b, factor=b_factor)
+    s[V].reorder(bo, c, bi, eps, nu, cc)    
     s[V].vectorize(cc)
-    _ = [s[V].unroll(x) for x in [eps, nu, r_eps, r_nu]]
-    fused = s[V].fuse(b, c)
-    s[V].parallel(fused)
+    _ = [s[V].unroll(x) for x in [eps, nu]]
+
+    b, c, eps, nu, cc = s[temp_input_transform].op.axis
+    s[temp_input_transform].vectorize(cc)
+    _ = [s[temp_input_transform].unroll(x) for x in [eps, nu]]
+    s[temp_input_transform].compute_at(s[V], bi)
 
     # batch gemm
-    b, k, eps, nu, bb, kk = s[M].op.axis
+    b, k, eps, nu, kk = s[M].op.axis
     c = s[M].op.reduce_axis[0]
-    fused = s[M].fuse(b, k)
-    s[M].parallel(fused)
-    co, ci = s[M].split(c, factor=8)    
-    s[M].reorder(co, bb, ci, kk)
+    co, ci = s[M].split(c, factor=8)
+    bo, bi = s[M].split(b, factor=b_factor)
+    s[M].reorder(bo, k, bi, eps, co, nu, ci, kk)
+    s[V].compute_at(s[M], bo)
     s[M].unroll(ci)
     s[M].vectorize(kk)
     
-#     # inverse transform
-    s[A].compute_inline()
-    n, k, h, w, kk = s[output].op.axis
-    r_eps, r_nu = s[output].op.reduce_axis    
-    ho, hi = s[output].split(h, factor=8)
-    wo, wi = s[output].split(w, factor=8)
-    s[output].reorder(n, k, ho, wo, hi, wi, r_eps, r_nu, kk)
-    s[output].vectorize(kk)
-    _ = [s[output].unroll(x) for x in [r_eps, r_nu]]
-    if conv_op == output_op:
-        fused = s[output].fuse(n, k, ho, wo)
-        s[output].parallel(fused)
-    else:
-        n, k, h, w, kk = s[output_op].op.axis
-        ho, hi = s[output_op].split(h, factor=8)
-        wo, wi = s[output_op].split(w, factor=8)
-        s[output_op].reorder(n, k, ho, wo, hi, wi, kk)
-        s[output_op].vectorize(kk)
-        fused = s[output_op].fuse(n, k, ho, wo) 
-        s[output_op].parallel(fused)
-        s[conv_op].compute_at(s[output_op], fused)
-        
-    return s
+    # inverse transform
+    b, k, eps, nu, kk = s[Y].op.axis
+    bo, bi = s[Y].split(b, factor=b_factor)
+    s[Y].reorder(bo, k, bi, eps, nu, kk)    
+    s[Y].vectorize(kk)
+    _ = [s[Y].unroll(x) for x in [eps, nu]]
+    
+    b, k, eps, nu, kk = s[temp_output_transform].op.axis
+    s[temp_output_transform].unroll(eps)
+    s[temp_output_transform].unroll(nu)
+    s[temp_output_transform].vectorize(kk)
+    s[temp_output_transform].compute_at(s[Y], bi)
 
+    last = output_op.output(0)
+    n, k, h, w, kk = s[last].op.axis
+    ho, hi = s[last].split(h, factor=4)
+    wo, wi = s[last].split(w, factor=4)
+    s[last].reorder(n, ho, wo, k, hi, wi, kk)
+    woo, bi = s[last].split(wo, factor=b_factor)
+    bo = s[last].fuse(n, ho, woo)
+    s[last].reorder(bo, k, bi, hi, wi, kk)
+    s[last].vectorize(kk)
+    s[last].parallel(bo)
+    s[M].compute_at(s[last], bo)
+    s[Y].compute_at(s[last], bo)
+    s[last].parallel(bo)
+
+    if conv_op != output_op:
+        n, k, h, w, kk = s[output].op.axis
+        s[output].vectorize(kk)
+        s[conv_op].compute_at(s[output_op], bo)
+
+    return s
+    
 @generic.schedule_conv2d_winograd_without_filter_transform.register(["cpu"])
 def schedule_winograd(outs):
     """Create schedule for tensors"""
@@ -240,4 +314,3 @@ def schedule_winograd(outs):
 
     traverse(output_op)
     return s
-    

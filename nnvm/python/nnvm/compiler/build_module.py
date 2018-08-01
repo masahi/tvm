@@ -107,15 +107,19 @@ def _lower(sch, inputs, func_name, graph):
     import traceback
     # pylint: disable=broad-except
     try:
-        unroll_factor = 128
-        if len(inputs) > 2 and inputs[1].shape[0].value == 4 and inputs[1].shape[1].value == 4:
-            unroll_factor = 1400
-        target = tvm.target.current_target().target_name
-        with tvm.build_config(auto_unroll_max_step=unroll_factor,
-                                unroll_explicit=(target != "cuda")):
-            f = tvm.lower(sch, inputs, name=func_name)
-            logging.debug("lower function %s", func_name)
-            logging.debug("%s", tvm.lower(sch, inputs, simple_mode=True))
+        
+        # unroll_factor = 128
+        # if len(inputs) > 2 and inputs[1].shape[0].value == 4 and inputs[1].shape[1].value == 4:
+        #     unroll_factor = 1400
+        # target = tvm.target.current_target().target_name
+        # with tvm.build_config(auto_unroll_max_step=unroll_factor,
+        #                         unroll_explicit=(target != "cuda")):
+        f = tvm.lower(sch, inputs, name=func_name)
+        if len(inputs) > 2:
+            logging.debug(inputs[0].shape)
+            logging.debug(inputs[1].shape)
+        logging.debug("lower function %s", func_name)
+        logging.debug("%s", tvm.lower(sch, inputs, simple_mode=True))
     except Exception:
         msg = traceback.format_exc()
         msg += "Error during compile graph\n"
