@@ -22,6 +22,11 @@ TVM_REGISTER_API("make.abs")
     *ret = tvm::abs(args[0]);
   });
 
+TVM_REGISTER_API("make.fast_exp")
+.set_body([](TVMArgs args,  TVMRetValue *ret) {
+    *ret = tvm::fast_exp(args[0]);
+  });
+
 TVM_REGISTER_API("make._range_by_min_extent")
 .set_body([](TVMArgs args,  TVMRetValue *ret) {
     *ret = Range::make_by_min_extent(args[0], args[1]);

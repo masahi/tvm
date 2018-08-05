@@ -325,6 +325,8 @@ def abs(x):
     """
     return _make.abs(x)
 
+def fast_exp(x):
+    return _make.fast_exp(x)
 
 def round(x):
     """Round elements of the array to the nearest integer.
