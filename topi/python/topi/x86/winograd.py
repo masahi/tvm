@@ -298,7 +298,7 @@ def schedule_winograd(outs):
     s = tvm.create_schedule([x.op for x in outs])
     output_op = outs[0].op
 
-
+    scheduled_ops = []
     def traverse(op):
         """Traverse operators from computation graph"""
         # inline all one-to-one-mapping operators except the last stage (output)
@@ -306,11 +306,12 @@ def schedule_winograd(outs):
             if op not in s.outputs:
                 s[op].compute_inline()
             for tensor in op.input_tensors:
-                if tensor.op.input_tensors:
+                if tensor.op.input_tensors and tensor.op not in scheduled_ops:
                     traverse(tensor.op)
 
         if 'conv2d_winograd' in op.tag:
             schedule_winograd_without_filter_transform(s, op, output_op)
+        scheduled_ops.append(op)
 
     traverse(output_op)
     return s

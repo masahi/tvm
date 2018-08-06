@@ -90,6 +90,10 @@ inline Expr abs(Expr x) {
   }
 }
 
+inline Expr fast_exp(Expr x) {
+  return HalideIR::fast_exp(x);
+}
+
 }  // namespace tvm
 
 #endif  // TVM_IR_OPERATOR_H_
