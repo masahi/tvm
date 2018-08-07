@@ -26,6 +26,7 @@ using namespace tvm;
       }, name, tag);                                            \
   }
 
+TOPI_DECLARE_UNARY_OP(fast_exp);
 TOPI_DECLARE_UNARY_OP(exp);
 TOPI_DECLARE_UNARY_OP(tanh);
 TOPI_DECLARE_UNARY_OP(sigmoid);

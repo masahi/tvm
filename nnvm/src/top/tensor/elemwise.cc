@@ -166,7 +166,7 @@ NNVM_REGISTER_ELEMWISE_UNARY_OP(exp)
   "FTVMCompute", [](const NodeAttrs& attrs,
                     const Array<Tensor>& inputs,
                     const Array<Tensor>& out_info) {
-      return Array<Tensor>{ topi::exp(inputs[0]) };
+      return Array<Tensor>{ topi::fast_exp(inputs[0]) };
 })
 .set_attr<FGradient>(
   "FGradient", [](const NodePtr& n,
