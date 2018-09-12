@@ -5,8 +5,7 @@ import topi
 import topi.testing
 import math
 
-def verify_upsampling(batch, in_channel, in_height, in_width, scale, layout='NCHW', method="BILINEAR"):
-
+def verify_upsampling(batch, in_channel, in_height, in_width, scale, layout='NCHW', method="NEAREST_NEIGHBOR"):
 
     if layout == 'NCHW':
         A = tvm.placeholder((batch, in_channel, in_height, in_width), name='A')
@@ -50,12 +49,18 @@ def verify_upsampling(batch, in_channel, in_height, in_width, scale, layout='NCH
 
 def test_upsampling():
     # NCHW
-    for method in ["NEAREST_NEIGHBOR", "BILINEAR"]:
-        verify_upsampling(8, 16, 32, 32, 2, method=method)
-        verify_upsampling(12, 32, 64, 64, 3, method=method)
-        # NHWC
-        verify_upsampling(8, 16, 32, 32, 2, "NHWC", method=method)
-        verify_upsampling(12, 32, 64, 64, 3, "NHWC", method=method)
+    verify_upsampling(8, 16, 32, 32, 2)
+    verify_upsampling(12, 32, 64, 64, 3)
+    # NHWC
+    verify_upsampling(8, 16, 32, 32, 2, layout="NHWC")
+    verify_upsampling(12, 32, 64, 64, 3, layout="NHWC")
+
+    # test on smaller workload since bilinear_resize_python is slow
+    verify_upsampling(2, 16, 32, 32, 2, method="BILINEAR")
+    verify_upsampling(2, 16, 32, 32, 3, method="BILINEAR") #fails
+    verify_upsampling(2, 16, 32, 32, 2, layout="NHWC", method="BILINEAR")
+    verify_upsampling(2, 16, 32, 32, 3, layout="NHWC", method="BILINEAR") #fails
+
 
 if __name__ == "__main__":
     test_upsampling()
