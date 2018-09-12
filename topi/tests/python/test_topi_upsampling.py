@@ -5,7 +5,7 @@ import topi
 import topi.testing
 import math
 
-def verify_upsampling(batch, in_channel, in_height, in_width, scale, layout='NCHW'):
+def verify_upsampling(batch, in_channel, in_height, in_width, scale, layout='NCHW', method="BILINEAR"):
 
 
     if layout == 'NCHW':
@@ -22,9 +22,13 @@ def verify_upsampling(batch, in_channel, in_height, in_width, scale, layout='NCH
         raise NotImplementedError(
             'Layout not supported {} '.format(layout))
 
-    B = topi.nn.upsampling(A, scale, layout=layout)
+    B = topi.nn.upsampling(A, scale, layout=layout, method=method)
 
-    b_np = topi.testing.upsampling_python(a_np, scale, layout)
+    if method == "BILINEAR":
+        out_size = (in_height*scale, in_width*scale)
+        b_np = topi.testing.bilinear_resize_python(a_np, out_size, layout)
+    else:
+        b_np = topi.testing.upsampling_python(a_np, scale, layout)
 
     def check_device(device):
         ctx = tvm.context(device, 0)
@@ -46,11 +50,12 @@ def verify_upsampling(batch, in_channel, in_height, in_width, scale, layout='NCH
 
 def test_upsampling():
     # NCHW
-    verify_upsampling(8, 16, 32, 32, 2)
-    verify_upsampling(12, 32, 64, 64, 3)
-    # NHWC
-    verify_upsampling(8, 16, 32, 32, 2, "NHWC")
-    verify_upsampling(12, 32, 64, 64, 3, "NHWC")
+    for method in ["NEAREST_NEIGHBOR", "BILINEAR"]:
+        verify_upsampling(8, 16, 32, 32, 2, method=method)
+        verify_upsampling(12, 32, 64, 64, 3, method=method)
+        # NHWC
+        verify_upsampling(8, 16, 32, 32, 2, "NHWC", method=method)
+        verify_upsampling(12, 32, 64, 64, 3, "NHWC", method=method)
 
 if __name__ == "__main__":
     test_upsampling()
