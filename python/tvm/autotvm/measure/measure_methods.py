@@ -124,6 +124,12 @@ class LocalBuilder(Builder):
         return results
 
 
+class LocalBuilderNoAsync(Builder):
+    pass
+
+class LocalRunnerNoAsync(Runner):
+    pass
+    
 class RPCRunner(Runner):
     """Run generated code on remove devices.
     This function will ask a RPC Tracker to get device for measurement.
