@@ -734,6 +734,56 @@ GraphPartitioner::Partition(const IndexedForwardGraph& graph) {
   return std::move(groups_);
 }
 
+class LiftTupleRootVisitor : ExprVisitor {
+ public:
+  void UpdateGroups(const Expr& body, std::unordered_map<const Node*, GraphPartitioner::Group*>& gmap) {
+    gmap_ = &gmap;
+    this->VisitExpr(body);
+  }
+
+  void VisitExpr_(const TupleNode* tuple){
+    auto* tuple_group = gmap_->at(tuple)->FindRoot();
+    if (tuple_group == gmap_->at(tuple)) {
+	  // this tuple is the root of its group.
+      Expr lca = FindLeastCommonAncestor(tuple->fields);
+      ReplaceRoot(tuple_group, lca);
+
+      for (auto field : tuple->fields) {
+        ReplaceRoot(tuple_group, field);
+      }
+    }
+  }
+
+ private:
+
+  Expr FindLeastCommonAncestor(const tvm::Array<Expr>& tuple_fields) {
+    Expr lca;
+    return lca;
+  };
+
+  void ReplaceRoot(GraphPartitioner::Group* orig_root_group, const Expr& new_root) {
+    const tvm::Node* root_ptr = new_root.get();
+    GraphPartitioner::Group* new_parent = gmap_->at(root_ptr);
+    CHECK(new_parent);
+    GraphPartitioner::Group* group = gmap_->at(root_ptr);
+    new_parent->parent = nullptr;
+    new_parent->root_ref = root_ptr;
+
+    PostOrderVisit(new_root, [=](const Expr& expr) {
+      GraphPartitioner::Group* g = gmap_->at(expr.get());
+      CHECK(g);
+      if (g->parent == orig_root_group) {
+        g->parent = new_parent;
+        g->root_ref = root_ptr;
+      }
+    });
+  }
+
+  std::unordered_map<const Node*, GraphPartitioner::Group*>* gmap_;
+
+};
+
+
 class FuseMutator : private ExprMutator {
  public:
   // Run the transform
@@ -746,6 +796,7 @@ class FuseMutator : private ExprMutator {
       CHECK(graph.post_dfs_order[nid]->ref != nullptr);
       gmap_[graph.post_dfs_order[nid]->ref] = groups[nid];
     }
+    //LiftTupleRootVisitor().UpdateGroups(body, gmap_);
     // The following line can be used for debug.
     // this->DebugDumpGroup(body);
     return this->Mutate(body);
@@ -821,28 +872,10 @@ class FuseMutator : private ExprMutator {
 
   Expr VisitExpr_(const TupleNode* tuple) {
     auto* ret_group = gmap_.at(tuple)->FindRoot();
-    Array<Expr> new_fields = GetNewArguments(tuple->fields, ret_group);
     if (ret_group == gmap_.at(tuple)) {
-      // This tuple is the root of its group. Check if all fields come from other groups.
-      bool isolated = new_fields.size() == ginfo_[ret_group].params.size();
-      for (size_t i = 0; i < new_fields.size() && isolated; ++i) {
-        isolated &= (new_fields[i].same_as(ginfo_[ret_group].params[i]));
-      }
-      if (isolated) {
-        // Do not put a isolated tuple into a function
-        return ExprMutator::VisitExpr_(tuple);
-      }
-      // This tuple has been fused with other ops before it
-      for (size_t i = 0; i < new_fields.size(); i++) {
-        // Copy function arguments to tuple field of the output because currently graph memory
-        // planer doesn't support inplace operations
-        if (new_fields[i].as<VarNode>()) {
-          auto copy = Copy(new_fields[i]);
-          new_fields.Set(i, copy);
-        }
-      }
-      return MakeNewFunction(ret_group, tuple->checked_type(), TupleNode::make(new_fields));
+      return ExprMutator::VisitExpr_(tuple);
     }
+    Array<Expr> new_fields = GetNewArguments(tuple->fields, ret_group);
     // This tuple is an intermediate node in the group
     return TupleNode::make(new_fields);
   }
