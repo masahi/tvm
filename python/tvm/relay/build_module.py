@@ -158,7 +158,6 @@ class BuildModule(object):
 
         return mod, params
 
-
     def _set_params(self, params):
         self._set_params_func(_convert_param_map(params))
 
