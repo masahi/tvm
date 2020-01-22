@@ -527,6 +527,19 @@ def AnnotateCompiler(compiler):
 
 
 def MergeComposite(compiler):
+    """Merge multiple operators into a single composite relay function.
+
+    Parameters
+    ----------
+    compiler : str
+        The compiler used for codegen.
+
+    Returns
+    -------
+    ret : tvm.relay.Pass
+        The registered pass that merges operators into a single composite
+        relay function.
+    """
     return _transform.MergeComposite(compiler)
 
 
