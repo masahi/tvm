@@ -23,6 +23,9 @@ from tvm.relay.build_module import bind_params_by_name
 from tvm.relay.testing import run_infer_type, create_workload
 from tvm.relay import analysis, expr as _expr
 import tvm.relay.testing
+import os
+import sys
+from tvm.contrib import util
 
 def make_add_sub_mul_pattern():
     """Create a pattern to match the following graph.
@@ -163,11 +166,64 @@ def test_branch_merge():
     assert relay.analysis.alpha_equal(result, expected)
 
 
+def check_result(mod, map_inputs, out_shape, result, tol=1e-5, target="llvm",
+                 ctx=tvm.cpu(), params=None):
+    if sys.platform == "win32":
+        print("Skip test on Windows for now")
+        return
+
+    def update_lib(lib):
+        test_dir = os.path.dirname(os.path.realpath(os.path.expanduser(__file__)))
+        source_dir = os.path.join(test_dir, "..", "..", "..")
+        contrib_path = os.path.join(source_dir, "src", "runtime", "contrib")
+
+        kwargs = {}
+        kwargs["options"] = ["-O2", "-std=c++11", "-I" + contrib_path]
+        tmp_path = util.tempdir()
+        lib_name = 'lib.so'
+        lib_path = tmp_path.relpath(lib_name)
+        lib.export_library(lib_path, fcompile=False, **kwargs)
+        lib = tvm.module.load(lib_path)
+
+        return lib
+
+    def check_vm_result():
+        with relay.build_config(opt_level=3, disabled_pass=["AlterOpLayout"]):
+            exe = relay.vm.compile(mod, target=target, params=params)
+        code, lib = exe.save()
+        lib = update_lib(lib)
+        exe = relay.vm.Executable.load_exec(code, lib)
+        vm = relay.vm.VirtualMachine(exe)
+        vm.init(ctx)
+        out = vm.run(**map_inputs)
+        tvm.testing.assert_allclose(out.asnumpy(), result, rtol=tol, atol=tol)
+
+    def check_graph_runtime_result():
+        with relay.build_config(opt_level=3, disabled_pass=["AlterOpLayout"]):
+            json, lib, param = relay.build(mod, target=target, params=params)
+        lib = update_lib(lib)
+        rt_mod = tvm.contrib.graph_runtime.create(json, lib, ctx)
+
+        for name, data in map_inputs.items():
+            rt_mod.set_input(name, data)
+        rt_mod.set_input(**param)
+        rt_mod.run()
+        out = tvm.nd.empty(out_shape, ctx=ctx)
+        out = rt_mod.get_output(0, out)
+
+        tvm.testing.assert_allclose(out.asnumpy(), result, rtol=tol, atol=tol)
+
+    # check_vm_result()
+    check_graph_runtime_result()
+
+
 def test_conv_bn_relu_merge():
     def make_pattern():
         data = relay.var("data", relay.TensorType((1, 3, 224, 224), "float32"))
-        weight = relay.const(np.zeros((16, 3, 3, 3)))
-        bias = relay.const(np.zeros((16, 1, 1)))
+        # weight = relay.const(np.zeros((16, 3, 3, 3)))
+        # bias = relay.const(np.zeros((16, 1, 1)))
+        weight = relay.var("weight")
+        bias = relay.var("bias")
         conv = relay.nn.conv2d(data=data, weight=weight, kernel_size=(3, 3),
                                channels=16, padding=(1, 1))
         add = relay.add(conv, bias)
@@ -255,8 +311,27 @@ def test_conv_bn_relu_merge():
         mod = get_partitoned_mod(mod, params)
         assert(len(get_partitions(mod)) == 27)
 
+    def test_exec(mod, params, ref_mod, ref_params, out_shape):
+        ishape = (1, 3, 224, 224)
+        i_data = np.random.randn(*ishape).astype(np.float32)
+        ref_ex = relay.create_executor("graph", mod=ref_mod, ctx=tvm.cpu(0))
+        ref_res = ref_ex.evaluate()(i_data, **ref_params)
+
+        mod = get_partitoned_mod(mod, params)
+        check_result(mod, {"data": i_data},
+                     out_shape, ref_res.asnumpy(), tol=1e-5, params=params)
+
     test_partition()
     test_partition_mobilenet()
+
+    net = get_net()
+    mod, params = tvm.relay.testing.create_workload(net)
+    ref_mod, ref_params = tvm.relay.testing.create_workload(net)
+    test_exec(mod, params, ref_mod, ref_params, (1, 16, 224, 224))
+
+    mod, params = relay.testing.mobilenet.get_workload()
+    ref_mod, ref_params = relay.testing.mobilenet.get_workload()
+    test_exec(mod, params, ref_mod, ref_params, (1, 1000))
 
 
 if __name__ == "__main__":
