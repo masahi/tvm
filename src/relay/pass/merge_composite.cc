@@ -23,7 +23,7 @@
  * as 'composite'.
  */
 
-#include <tvm/top/operation.h>
+#include <tvm/te/operation.h>
 #include <tvm/relay/analysis.h>
 #include <tvm/relay/expr_functor.h>
 #include <tvm/relay/op_attr_types.h>
@@ -175,8 +175,8 @@ Pass MergeComposite(const tvm::Map<std::string, Expr>& pattern) {
       [=](Function f, IRModule m, PassContext pc) {
         return Downcast<Function>(relay::merge_composite::MergeComposite(f, pattern));
       };
-  auto func_pass = CreateFunctionPass(pass_func, 0, "MergeComposite", {});
-  return func_pass;
+  auto func_ppas = CreateFunctionPass(pass_func, 0, "MergeComposite", {});
+  return func_ppas;
 }
 
 TVM_REGISTER_GLOBAL("relay._transform.MergeComposite")

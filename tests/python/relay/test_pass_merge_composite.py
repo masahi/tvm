@@ -17,7 +17,12 @@
 """Unit tests for merge composite."""
 from tvm import relay
 from tvm.relay.testing import run_opt_pass
-
+import numpy as np
+from tvm.relay import transform
+from tvm.relay.build_module import bind_params_by_name
+from tvm.relay.testing import run_infer_type, create_workload
+from tvm.relay import analysis, expr as _expr
+import tvm.relay.testing
 
 def make_add_sub_mul_pattern():
     """Create a pattern to match the following graph.
@@ -156,3 +161,105 @@ def test_branch_merge():
     result = run_opt_pass(before(), relay.transform.MergeComposite(pattern_table))
     expected = run_opt_pass(expected(), relay.transform.InferType())
     assert relay.analysis.alpha_equal(result, expected)
+
+
+def test_conv_bn_relu_merge():
+    def make_pattern():
+        data = relay.var("data", relay.TensorType((1, 3, 224, 224), "float32"))
+        weight = relay.const(np.zeros((16, 3, 3, 3)))
+        bias = relay.const(np.zeros((16, 1, 1)))
+        conv = relay.nn.conv2d(data=data, weight=weight, kernel_size=(3, 3),
+                               channels=16, padding=(1, 1))
+        add = relay.add(conv, bias)
+        return relay.nn.relu(add)
+
+    def get_layers(prefix, data, in_channel, out_channel,
+                   include_bn=True, include_sigmoid=False):
+        weight = relay.var(prefix + "weight")
+        bn_gamma = relay.var(prefix + "bn_gamma")
+        bn_beta = relay.var(prefix + "bn_beta")
+        bn_mmean = relay.var(prefix + "bn_mean")
+        bn_mvar = relay.var(prefix + "bn_var")
+
+        layer = relay.nn.conv2d(data=data, weight=weight, kernel_size=(3, 3),
+                                channels=out_channel, padding=(1, 1))
+        if include_bn:
+            bn_output = relay.nn.batch_norm(layer, bn_gamma, bn_beta,
+                                            bn_mmean, bn_mvar)
+            layer = bn_output[0]
+        if include_sigmoid:
+            # dummy layer to prevent pattern detection
+            layer = relay.sigmoid(layer)
+        layer = relay.nn.relu(layer)
+        return layer
+
+    def get_net(include_bn=True, include_sigmoid=False):
+        data = relay.var("data", relay.TensorType((1, 3, 224, 224), "float32"))
+        layer1 = get_layers("layer1_", data, 3, 16, include_bn, include_sigmoid)
+        layer2 = get_layers("layer2_", layer1, 16, 16, include_bn, include_sigmoid)
+        last = layer2
+        return relay.Function(relay.analysis.free_vars(last), last)
+
+    def pre_optimize(mod, params):
+        remove_bn_pass = transform.Sequential([
+            relay.transform.InferType(),
+            relay.transform.SimplifyInference(),
+            relay.transform.FoldConstant(),
+            relay.transform.FoldScaleAxis(),
+        ])
+
+        if params != {}:
+            # This is required for constant folding
+            mod["main"] = bind_params_by_name(mod["main"], params)
+
+        with relay.build_config(opt_level=3, disabled_pass=["AlterOpLayout"]):
+            mod = remove_bn_pass(mod)
+
+        return mod
+
+    def get_partitoned_mod(mod, params):
+        mod = pre_optimize(mod, params)
+        pattern_table = {
+            "dnnl.conv_bias_relu": make_pattern()
+        }
+        composite_pass = relay.transform.MergeComposite(pattern_table)
+        mod["main"] = run_opt_pass(mod["main"], composite_pass)
+        return mod
+
+    def get_partitions(mod):
+        partitions = []
+
+        def visit_func(expr):
+            if isinstance(expr, _expr.Function) and expr != mod["main"]:
+                partitions.append(expr)
+
+        analysis.post_order_visit(mod["main"], visit_func)
+        return partitions
+
+    def test_detect_pattern(include_bn, include_sigmoid, num_expected_partition):
+        net = get_net(include_bn, include_sigmoid)
+        mod, params = tvm.relay.testing.create_workload(net)
+        mod = get_partitoned_mod(mod, params)
+        assert(len(get_partitions(mod)) == num_expected_partition)
+
+    def test_partition():
+        # conv + bn + relu -> detection succeed
+        test_detect_pattern(True, False, 2)
+        # conv + relu -> fail
+        test_detect_pattern(False, False, 0)
+        # conv + bn + sigmoid + relu -> fail
+        test_detect_pattern(True, True, 0)
+
+    def test_partition_mobilenet():
+        mod, params = relay.testing.mobilenet.get_workload()
+        mod = get_partitoned_mod(mod, params)
+        assert(len(get_partitions(mod)) == 27)
+
+    test_partition()
+    test_partition_mobilenet()
+
+
+if __name__ == "__main__":
+    test_branch_merge()
+    test_simple_merge()
+    test_conv_bn_relu_merge()
