@@ -34,6 +34,7 @@ from ..loops import while_loop
 from .common import get_relay_op
 from .common import infer_shape as _infer_shape
 from .common import infer_value as _infer_value
+from .common import infer_type as _infer_type
 from ..prelude import Prelude, StaticTensorArrayOps
 
 from . import qnn_torch
@@ -947,15 +948,6 @@ def _Float():
     return _impl
 
 
-def _stack():
-    def _impl(inputs, input_types):
-        if isinstance(inputs[0], list):
-            return _op.tensor.stack(inputs[0], 0)
-        else:
-            return _wrap_const(1)
-    return _impl
-
-
 def _mm():
     def _impl(inputs, input_types):
         return _op.nn.dense(inputs[0], inputs[1])
@@ -964,34 +956,45 @@ def _mm():
 
 def _empty_list(prelude):
     def _impl(inputs, input_types):
-        return prelude.nil()
-    return _impl
-
-
-def _rev_list(prelude):
-    def _impl(inputs, input_types):
-        return prelude.rev(inputs[0])
-    return _impl
-
-
-def _cons_list(prelude):
-    def _impl(inputs, input_types):
-        shape = _infer_shape(inputs[0])
-        static_tensor_array_ops = StaticTensorArrayOps(prelude, "float32", shape)
+        # return prelude.nil()
+        static_tensor_array_ops = StaticTensorArrayOps(prelude, "float32", (2, 4))
         static_tensor_array_ops.register()
-        tensor = prelude.get_var_static('tensor_constructor', "float32", shape)
-        return prelude.cons(tensor(inputs[0]), inputs[1])
+        tensor_array = prelude.get_var_static('tensor_array', "float32", (2, 4))
+        return tensor_array(_expr.const(10))
     return _impl
 
 
-def _tensor_array_stack(prelude):
+def _add_(prelude):
     def _impl(inputs, input_types):
-        # print(prelude.mod)
-        # TODO: how to get the fixed shape of static_tensor_array inputs[0]?
-        stack = prelude.get_var_static('tensor_array_stack', "float32", (2, 4))
-        stacked = stack(inputs[0])
-        return stacked
+        if isinstance(inputs[1], list):
+            # list append op
+            assert len(inputs[1]) == 1, "List append supported only for one value"
+            shape = _infer_shape(inputs[1][0])
+            static_tensor_array_ops = StaticTensorArrayOps(prelude, "float32", shape)
+            static_tensor_array_ops.register()
+            tensor_create = prelude.get_var_static('tensor_constructor', "float32", shape)
+            tensor_write = prelude.get_var_static('tensor_array_write', "float32", shape)
+            print(inputs[0])
+            return tensor_write(inputs[0], _expr.const(0),
+                                tensor_create(inputs[1][0]))
+        return _elemwise("add")(inputs, input_types)
     return _impl
+
+
+def _stack(prelude):
+    def _impl(inputs, input_types):
+        if isinstance(inputs[0], list):
+            return _op.tensor.stack(inputs[0], 0)
+        else:
+            # tensor array case
+            # print(prelude.mod)
+            # TODO: how to get the fixed shape of static_tensor_array inputs[0]?
+            # print(_infer_type(inputs[0], mod=prelude.mod))
+            stack = prelude.get_var_static('tensor_array_stack', "float32", (2, 4))
+            stacked = stack(inputs[0])
+            return stacked
+    return _impl
+
 
 # Helper functions for operator implementation
 
@@ -1054,13 +1057,10 @@ def _wrap_const(c):
     return c
 
 # Operator mappings
-
-
 def get_convert_map(prelude):
     convert_map = {
         "aten::device"                          : _none(),
         "aten::add"                             : _elemwise("add"),
-        "aten::add_"                            : _elemwise("add"),
         "aten::sub"                             : _elemwise("subtract"),
         "aten::sub_"                            : _elemwise("subtract"),
         "aten::max"                             : _elemwise("maximum"),
@@ -1123,7 +1123,6 @@ def get_convert_map(prelude):
         "aten::expand"                          : _expand(),
         "aten::Int"                             : _int(),
         "prim::NumToTensor"                     : _numtotensor(),
-        "prim::ListUnpack"                      : _identity(),
         "aten::constant_pad_nd"                 : _pad(),
         "aten::permute"                         : _transpose(),
         "aten::sum"                             : _reduce("sum"),
@@ -1145,12 +1144,10 @@ def get_convert_map(prelude):
         "aten::tanh"                            : _tanh(),
         "aten::adaptive_avg_pool3d"             : _adaptive_avg_pool_3d(),
         "aten::adaptive_max_pool3d"             : _adaptive_max_pool_3d(),
-        'aten::stack'                           : _stack(),
         'aten::mm'                              : _matmul(),
+        'aten::stack'                           : _stack(prelude),
+        "aten::add_"                            : _add_(prelude),
         'relay::empty_list'                     : _empty_list(prelude),
-        'relay::cons_list'                      : _cons_list(prelude),
-        'relay::rev_list'                       : _rev_list(prelude),
-        'relay::tensor_array_stack'             : _tensor_array_stack(prelude),
     }
 
     return convert_map
@@ -1366,68 +1363,6 @@ def _unpack_tuple(tup):
         assert False
 
 
-def _rewrite_for_tensor_array(graph):
-    def has_kind(chain, kind):
-        return any([node.kind() == kind for node in chain])
-
-    def needs_rewrite(chain):
-        return has_kind(chain, "aten::stack") and has_kind(chain, "prim::Loop")
-
-    def get_node(node_list, kind, filter_func=lambda node: True):
-        for node in node_list:
-            if node.kind() == kind and filter_func(node):
-                return node
-        assert False
-        return None
-
-    def node_type(node):
-        return str(node.output().type())
-
-    list_construct_ops = graph.findAllNodes("prim::ListConstruct")
-    tensor_list_ops = [op for op in list_construct_ops
-                       if node_type(op) == "List[Tensor]"]
-    chains = []
-    for tensor_list_op in tensor_list_ops:
-        chains += get_use_chains(tensor_list_op)
-
-    for chain in [chain for chain in chains if needs_rewrite(chain)]:
-        tensor_list_op = chain[0]
-        loop_op = get_node(chain, "prim::Loop")
-
-        empty_list_node = graph.create("relay::empty_list")
-        empty_list_node.insertBefore(loop_op)
-        tensor_list_op.replaceAllUsesWith(empty_list_node)
-        tensor_list_op.destroy()
-
-        rev_list_node = graph.create("relay::rev_list",
-                                     [loop_op.outputsAt(0)])
-        rev_list_node.insertAfter(loop_op)
-
-        stack_op = get_node(chain, "aten::stack")
-        tarray_stack_node = graph.create("relay::tensor_array_stack",
-                                         [rev_list_node.output()])
-        tarray_stack_node.insertBefore(stack_op)
-        stack_op.replaceAllUsesWith(tarray_stack_node)
-        stack_op.destroy()
-
-        loop_block = list(loop_op.blocks())[0]
-        loop_nodes = list(loop_block.nodes())
-
-        add_op = get_node(loop_nodes, "aten::add_",
-                          lambda node: node_type(node) == "List[Tensor]")
-
-        list_singlton_op = add_op.inputsAt(1).node()
-        list_singlton_op_input = list_singlton_op.inputsAt(0)
-        list_singlton_op.output().replaceAllUsesWith(list_singlton_op_input)
-        list_singlton_op.destroy()
-
-        cons_list_node = graph.create("relay::cons_list",
-                                      list(reversed(list(add_op.inputs()))))
-        cons_list_node.insertBefore(add_op)
-        add_op.replaceAllUsesWith(cons_list_node)
-        add_op.destroy()
-
-
 def get_use_chains(root_node, terminate=lambda _: False):
     """
     Track a chain of users of this node forward, returning a list of chains
@@ -1617,13 +1552,16 @@ def convert_operators(operators, outputs, ret_names, convert_map):
 
         if operator == "prim::Constant":
             outputs[node_name] = _get_constant(op_node)
-        elif operator == 'prim::ListConstruct' and _is_int_seq(inputs):
+        elif operator == "prim::ListConstruct" and _is_int_seq(inputs):
             outputs[node_name] = _expr.var(node_name, shape=inputs)
-        elif operator == 'prim::ListConstruct':
+        elif operator == "prim::ListConstruct" and len(inputs) > 0:
             outputs[node_name] = inputs
-        elif operator == 'prim::TupleConstruct':
+        elif operator == "prim::ListConstruct":
+            relay_op = convert_map['relay::empty_list']
+            outputs[node_name] = relay_op(inputs, _get_input_types(op_node))
+        elif operator == "prim::TupleConstruct":
             outputs[node_name] = _expr.Tuple(inputs)
-        elif operator in ["prim::ListUnpack", 'prim::TupleUnpack']:
+        elif operator in ["prim::ListUnpack", "prim::TupleUnpack"]:
             assert len(inputs) == 1
             if isinstance(inputs[0], list):
                 unpacked = inputs[0]
@@ -1699,7 +1637,6 @@ def from_pytorch(script_module, input_shapes, custom_convert_map=None):
 
     graph = script_module.graph.copy()
     _run_jit_passes(graph)
-    _rewrite_for_tensor_array(graph)
     print(graph)
 
     if custom_convert_map:
