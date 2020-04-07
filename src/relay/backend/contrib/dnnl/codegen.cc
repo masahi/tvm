@@ -59,6 +59,7 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
       out_.push_back(visited_[constant]);
       return;
     }
+    LOG(INFO) << "Visiting constant";
 
     out_.clear();
     Output output;
@@ -90,77 +91,43 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     // Do nothing
   }
 
+  void VisitExpr_(const FunctionNode* func) final {
+    const auto comp_name = func->GetAttr<tir::StringImm>(attr::kComposite);
+    if (comp_name.defined()) {
+      LOG(INFO) << "comp_name:" << comp_name;
+      current_composite_name = comp_name->value;
+    }
+    for (const auto& p : func->params) {
+      VisitExpr(p);
+    }
+    VisitExpr(func->body);
+    current_composite_name = "";
+  }
+
   void VisitExpr_(const CallNode* call) final {
-    struct GenerateBodyOutput {
-      std::string decl, buf;
-      int out_size = 1;
-      std::string out;
-    };
+    if (const auto* func = call->op.as<FunctionNode>()) {
+      return VisitExpr(call->op);
+    }
 
-    auto generate_body = [=](const CallNode* root_call, const std::string& func_name,
-                             const std::vector<std::string>& args,
-                             const std::vector<std::string>& fused_func_args) {
-      // Make function call with input buffers when visiting arguments
-      bool first = true;
-      std::ostringstream decl_stream;
-      decl_stream << "(";
-      for (size_t i = 0; i < root_call->args.size(); ++i) {
-        VisitExpr(root_call->args[i]);
-        for (auto out : out_) {
-          if (!first) {
-            decl_stream << ", ";
-          }
-          first = false;
-          decl_stream << out.name;
-        }
-      }
+    CHECK(call->op.as<OpNode>());
 
-      for (auto arg_name : fused_func_args) {
-        decl_stream << ", " << arg_name;
-      }
-
-      // Analyze the output buffer
-      auto type_node = root_call->checked_type().as<TensorTypeNode>();
-      CHECK(type_node != nullptr && runtime::TypeMatch(type_node->dtype, kDLFloat, 32))
-          << "Only support single output tensor with float type";
-
-      auto out_shape = GetShape(root_call->checked_type());
-
-      GenerateBodyOutput ret;
-      ret.out = "buf_" + std::to_string(buf_idx_++);
-      ret.out_size = std::accumulate(out_shape.begin(), out_shape.end(), 1, std::multiplies<int>());
-
-      this->PrintIndents();
-
-      std::ostringstream buf_stream;
-      buf_stream << "float* " << ret.out << " = (float*)std::malloc(4 * " << ret.out_size << ");";
-      ret.buf = buf_stream.str();
-
-      decl_stream << ", " << ret.out;
-      // Attach attribute arguments
-      for (size_t i = 0; i < args.size(); ++i) {
-        decl_stream << ", " << args[i];
-      }
-      decl_stream << ");";
-      ret.decl = func_name + decl_stream.str();
-
-      return ret;
-    };
+    LOG(INFO) << "current_composite_name: " << current_composite_name;
 
     GenerateBodyOutput ret;
-    if (auto conv_call = DetectFusedConv2DBiasReLU(call)) {
-      ret = generate_body(conv_call, "dnnl_fused_conv2d_bias_relu", FusedConv2dBiasReLU(conv_call),
-                          ext_fused_func_args_);
+    if (current_composite_name == "dnnl.conv_bias_relu") {
+      const auto* conv_call = GetRootConv2DCall(call);
+      ret = GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", FusedConv2dBiasReLU(conv_call),
+                         ext_fused_func_args_);
     } else if (IsOp(call, "nn.conv2d")) {
-      ret = generate_body(call, "dnnl_conv2d", Conv2d(call), {});
+      ret = GenerateBody(call, "dnnl_conv2d", Conv2d(call), {});
     } else if (IsOp(call, "nn.dense")) {
-      ret = generate_body(call, "dnnl_dense", Dense(call), {});
+      ret = GenerateBody(call, "dnnl_dense", Dense(call), {});
     } else if (IsOp(call, "nn.relu")) {
-      ret = generate_body(call, "dnnl_relu", Relu(call), {});
+      ret = GenerateBody(call, "dnnl_relu", Relu(call), {});
     } else if (IsOp(call, "nn.batch_norm")) {
-      ret = generate_body(call, "dnnl_bn", BatchNorm(call), {});
+      ret = GenerateBody(call, "dnnl_bn", BatchNorm(call), {});
     } else if (IsOp(call, "add")) {
-      ret = generate_body(call, "dnnl_add", Add(call), {});
+      ret = GenerateBody(call, "dnnl_add", Add(call), {});
     } else {
       LOG(FATAL) << "Unsupported op: " << AsText(call->op, false);
     }
@@ -187,16 +154,75 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
   }
 
  private:
-  const CallNode* DetectFusedConv2DBiasReLU(const CallNode* call) {
-    if (!IsOp(call, "nn.relu")) return nullptr;
-    auto relu_arg = call->args[0];
-    const CallNode* add_call = relu_arg.as<CallNode>();
-    if (!add_call || !IsOp(add_call, "add")) return nullptr;
-    auto add_arg = add_call->args[0];
-    const CallNode* conv_call = add_arg.as<CallNode>();
-    if (!conv_call || !IsOp(conv_call, "nn.conv2d")) return nullptr;
+  struct GenerateBodyOutput {
+    std::string decl, buf;
+    int out_size = 1;
+    std::string out;
+  };
 
+  GenerateBodyOutput
+  GenerateBody(const CallNode* root_call, const std::string& func_name,
+               const std::vector<std::string>& args,
+               const std::vector<std::string>& fused_func_args) {
+    // Make function call with input buffers when visiting arguments
+    bool first = true;
+    std::ostringstream decl_stream;
+    decl_stream << "(";
+    for (size_t i = 0; i < root_call->args.size(); ++i) {
+      VisitExpr(root_call->args[i]);
+      for (auto out : out_) {
+        if (!first) {
+          decl_stream << ", ";
+        }
+        first = false;
+        decl_stream << out.name;
+      }
+    }
+
+    for (auto arg_name : fused_func_args) {
+      decl_stream << ", " << arg_name;
+    }
+
+    // Analyze the output buffer
+    auto type_node = root_call->checked_type().as<TensorTypeNode>();
+    CHECK(type_node != nullptr && runtime::TypeMatch(type_node->dtype, kDLFloat, 32))
+        << "Only support single output tensor with float type";
+
+    auto out_shape = GetShape(root_call->checked_type());
+
+    GenerateBodyOutput ret;
+    ret.out = "buf_" + std::to_string(buf_idx_++);
+    ret.out_size = std::accumulate(out_shape.begin(), out_shape.end(), 1, std::multiplies<int>());
+
+    this->PrintIndents();
+
+    std::ostringstream buf_stream;
+    buf_stream << "float* " << ret.out << " = (float*)std::malloc(4 * " << ret.out_size << ");";
+    ret.buf = buf_stream.str();
+
+    decl_stream << ", " << ret.out;
+    // Attach attribute arguments
+    for (size_t i = 0; i < args.size(); ++i) {
+      decl_stream << ", " << args[i];
+    }
+    decl_stream << ");";
+    ret.decl = func_name + decl_stream.str();
+
+    return ret;
+  }
+
+  const CallNode* GetRootConv2DCall(const CallNode* relu_call) {
+    CHECK(relu_call && IsOp(relu_call, "nn.relu"));
+    const auto relu_arg = relu_call->args[0];
+    const CallNode* add_call = relu_arg.as<CallNode>();
+    CHECK(add_call && IsOp(add_call, "add"));
+    const auto add_arg = add_call->args[0];
+    const CallNode* conv_call = add_arg.as<CallNode>();
+    CHECK(conv_call && IsOp(conv_call, "nn.conv2d"));
+
+    LOG(INFO) << "fused call detected";
     VisitExpr(add_call->args[1]);
+
     CHECK_EQ(ext_fused_func_args_.size(), 0);
     CHECK_EQ(out_.size(), 1) << "Expected only one constant (bias)";
     ext_fused_func_args_.push_back(out_[0].name);
@@ -307,6 +333,8 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
   std::vector<Output> out_;
   /*! \brief The cached expressions. */
   std::unordered_map<Expr, Output, ObjectHash, ObjectEqual> visited_;
+  /*! TODO*/
+  std::string current_composite_name = "";
 };
 
 /*!
