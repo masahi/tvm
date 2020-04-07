@@ -58,7 +58,6 @@ class CodegenC : public ExprVisitor, public CodegenCBase {
       return;
     }
 
-    std::ostringstream decl_stream;
     std::ostringstream buf_stream;
 
     out_.clear();

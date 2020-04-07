@@ -993,14 +993,11 @@ def test_partition_conv_bias_relu():
     test_partition()
     test_partition_mobilenet()
 
+    # exec test on mobilenet is not possible due to manually inlined constants
     net = get_net()
     mod, params = tvm.relay.testing.create_workload(net)
     ref_mod, ref_params = tvm.relay.testing.create_workload(net)
     test_exec(mod, params, ref_mod, ref_params, (1, 8, 224, 224))
-
-    # mod, params = relay.testing.mobilenet.get_workload()
-    # ref_mod, ref_params = relay.testing.mobilenet.get_workload()
-    # test_exec(mod, params, ref_mod, ref_params, (1, 1000))
 
 
 if __name__ == "__main__":
