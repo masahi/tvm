@@ -51,20 +51,14 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     Output output;
     output.name = node->name_hint();
     out_.push_back(output);
-    LOG(INFO) << "Visited " << node->name_hint();
   }
 
   void VisitExpr_(const ConstantNode* cn) final {
     Constant constant = GetRef<Constant>(cn);
     if (visited_.count(constant)) {
-      // Note this is for demostration purpose. ConstantNode doesn't necessarily
-      // belong to calls. We need to revisit this when tuples come into play.
       out_.push_back(visited_[constant]);
       return;
     }
-
-    std::ostringstream decl_stream;
-    std::ostringstream buf_stream;
 
     out_.clear();
     Output output;
@@ -73,33 +67,22 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     visited_[constant] = output;
 
     runtime::NDArray array = cn->data;
-    const auto& shape = array.Shape();
-    const DLTensor& dl_tensor = array.ToDLPack()->dl_tensor;
 
     // Get the number of elements.
     int64_t num_elems = 1;
-    for (auto i : shape) num_elems *= i;
+    for (auto i : array.Shape()) num_elems *= i;
 
     const auto* type_node = cn->checked_type().as<TensorTypeNode>();
     CHECK(type_node);
-    const auto& dtype = GetDtypeString(type_node);
-    // Define a const buffer: float const_0[64] = {1.0, 2.0, ...};
-    //
-    // Technically, you may need: static float* const_0 = (float*)malloc(4 * 64)
-    // to avoid possible stack overflow.
-    buf_stream << dtype << " " << output.name << "[" << num_elems << "] = {";
-    if (dtype == "float") {
-      float* p_flt = static_cast<float*>(dl_tensor.data);
-      for (int64_t i = 0; i < num_elems - 1; i++) buf_stream << p_flt[i] << ", ";
-      if (num_elems) buf_stream << p_flt[num_elems - 1];
-    } else if (dtype == "int") {
-      int* p_flt = static_cast<int*>(dl_tensor.data);
-      for (int64_t i = 0; i < num_elems - 1; i++) buf_stream << p_flt[i] << ", ";
-      if (num_elems) buf_stream << p_flt[num_elems - 1];
-    } else {
-      LOG(FATAL) << "Only float and int are supported for now.";
+    CHECK_EQ(GetDtypeString(type_node), "float") << "Only float is supported for now.";
+
+    std::ostringstream buf_stream;
+    buf_stream << "float* " << output.name << " = (float*)std::malloc(4 * " << num_elems << ");\n";
+    const float* ptr = static_cast<float*>(array.ToDLPack()->dl_tensor.data);
+    for (int64_t i = 0; i < num_elems; i++) {
+      buf_stream << "  " << output.name << "[" << i << "] = " << ptr[i] << ";\n";
     }
-    buf_stream << "};";
+
     ext_func_body.insert(ext_func_body.begin(), buf_stream.str());
   }
 
@@ -153,7 +136,6 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
       buf_stream << "float* " << ret.out << " = (float*)std::malloc(4 * " << ret.out_size << ");";
       ret.buf = buf_stream.str();
 
-
       decl_stream << ", " << ret.out;
       // Attach attribute arguments
       for (size_t i = 0; i < args.size(); ++i) {
@@ -165,11 +147,10 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
       return ret;
     };
 
-
     GenerateBodyOutput ret;
     if (auto conv_call = DetectFusedConv2DBiasReLU(call)) {
-      ret = generate_body(conv_call, "dnnl_fused_conv2d_bias_relu",
-                          FusedConv2dBiasReLU(conv_call), ext_fused_func_args_);
+      ret = generate_body(conv_call, "dnnl_fused_conv2d_bias_relu", FusedConv2dBiasReLU(conv_call),
+                          ext_fused_func_args_);
     } else if (IsOp(call, "nn.conv2d")) {
       ret = generate_body(call, "dnnl_conv2d", Conv2d(call), {});
     } else if (IsOp(call, "nn.dense")) {
