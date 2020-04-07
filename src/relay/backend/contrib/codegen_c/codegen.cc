@@ -178,6 +178,7 @@ class CodegenC : public ExprVisitor, public CodegenCBase {
     for (auto decl : func_decl_) {
       code_stream_ << decl << "\n";
     }
+    for (auto body: ext_func_body) LOG(INFO) << body;
     return JitImpl(ext_func_id_, ext_func_args_, buf_decl_, ext_func_body, out_);
   }
 

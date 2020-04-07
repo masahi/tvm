@@ -31,6 +31,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <numeric>
 
 #include "../codegen_c/codegen_c.h"
 
@@ -50,6 +51,56 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     Output output;
     output.name = node->name_hint();
     out_.push_back(output);
+    LOG(INFO) << "Visited " << node->name_hint();
+  }
+
+  void VisitExpr_(const ConstantNode* cn) final {
+    Constant constant = GetRef<Constant>(cn);
+    if (visited_.count(constant)) {
+      // Note this is for demostration purpose. ConstantNode doesn't necessarily
+      // belong to calls. We need to revisit this when tuples come into play.
+      out_.push_back(visited_[constant]);
+      return;
+    }
+
+    std::ostringstream decl_stream;
+    std::ostringstream buf_stream;
+
+    out_.clear();
+    Output output;
+    output.name = "const_" + std::to_string(const_idx_++);
+    out_.push_back(output);
+    visited_[constant] = output;
+
+    runtime::NDArray array = cn->data;
+    const auto& shape = array.Shape();
+    const DLTensor& dl_tensor = array.ToDLPack()->dl_tensor;
+
+    // Get the number of elements.
+    int64_t num_elems = 1;
+    for (auto i : shape) num_elems *= i;
+
+    const auto* type_node = cn->checked_type().as<TensorTypeNode>();
+    CHECK(type_node);
+    const auto& dtype = GetDtypeString(type_node);
+    // Define a const buffer: float const_0[64] = {1.0, 2.0, ...};
+    //
+    // Technically, you may need: static float* const_0 = (float*)malloc(4 * 64)
+    // to avoid possible stack overflow.
+    buf_stream << dtype << " " << output.name << "[" << num_elems << "] = {";
+    if (dtype == "float") {
+      float* p_flt = static_cast<float*>(dl_tensor.data);
+      for (int64_t i = 0; i < num_elems - 1; i++) buf_stream << p_flt[i] << ", ";
+      if (num_elems) buf_stream << p_flt[num_elems - 1];
+    } else if (dtype == "int") {
+      int* p_flt = static_cast<int*>(dl_tensor.data);
+      for (int64_t i = 0; i < num_elems - 1; i++) buf_stream << p_flt[i] << ", ";
+      if (num_elems) buf_stream << p_flt[num_elems - 1];
+    } else {
+      LOG(FATAL) << "Only float and int are supported for now.";
+    }
+    buf_stream << "};";
+    ext_func_body.insert(ext_func_body.begin(), buf_stream.str());
   }
 
   void VisitExpr_(const TupleGetItemNode* op) final {
@@ -57,75 +108,97 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
   }
 
   void VisitExpr_(const CallNode* call) final {
-    std::ostringstream decl_stream;
-    std::ostringstream buf_stream;
-    // Args: ID
-    std::vector<std::string> args;
+    struct GenerateBodyOutput {
+      std::string decl, buf;
+      int out_size = 1;
+      std::string out;
+    };
 
-    // Get the arguments for various DNNL kernels.
-    if (IsOp(call, "nn.conv2d")) {
-      decl_stream << "dnnl_conv2d";
-      args = Conv2d(call);
+    auto generate_body = [=](const CallNode* root_call, const std::string& func_name,
+                             const std::vector<std::string>& args,
+                             const std::vector<std::string>& fused_func_args) {
+      // Make function call with input buffers when visiting arguments
+      bool first = true;
+      std::ostringstream decl_stream;
+      decl_stream << "(";
+      for (size_t i = 0; i < root_call->args.size(); ++i) {
+        VisitExpr(root_call->args[i]);
+        for (auto out : out_) {
+          if (!first) {
+            decl_stream << ", ";
+          }
+          first = false;
+          decl_stream << out.name;
+        }
+      }
+
+      for (auto arg_name : fused_func_args) {
+        decl_stream << ", " << arg_name;
+      }
+
+      // Analyze the output buffer
+      auto type_node = root_call->checked_type().as<TensorTypeNode>();
+      CHECK(type_node != nullptr && runtime::TypeMatch(type_node->dtype, kDLFloat, 32))
+          << "Only support single output tensor with float type";
+
+      auto out_shape = GetShape(root_call->checked_type());
+
+      GenerateBodyOutput ret;
+      ret.out = "buf_" + std::to_string(buf_idx_++);
+      ret.out_size = std::accumulate(out_shape.begin(), out_shape.end(), 1, std::multiplies<int>());
+
+      this->PrintIndents();
+
+      std::ostringstream buf_stream;
+      buf_stream << "float* " << ret.out << " = (float*)std::malloc(4 * " << ret.out_size << ");";
+      ret.buf = buf_stream.str();
+
+
+      decl_stream << ", " << ret.out;
+      // Attach attribute arguments
+      for (size_t i = 0; i < args.size(); ++i) {
+        decl_stream << ", " << args[i];
+      }
+      decl_stream << ");";
+      ret.decl = func_name + decl_stream.str();
+
+      return ret;
+    };
+
+
+    GenerateBodyOutput ret;
+    if (auto conv_call = DetectFusedConv2DBiasReLU(call)) {
+      ret = generate_body(conv_call, "dnnl_fused_conv2d_bias_relu",
+                          FusedConv2dBiasReLU(conv_call), ext_fused_func_args_);
+    } else if (IsOp(call, "nn.conv2d")) {
+      ret = generate_body(call, "dnnl_conv2d", Conv2d(call), {});
     } else if (IsOp(call, "nn.dense")) {
-      decl_stream << "dnnl_dense";
-      args = Dense(call);
+      ret = generate_body(call, "dnnl_dense", Dense(call), {});
     } else if (IsOp(call, "nn.relu")) {
-      decl_stream << "dnnl_relu";
-      args = Relu(call);
+      ret = generate_body(call, "dnnl_relu", Relu(call), {});
     } else if (IsOp(call, "nn.batch_norm")) {
-      decl_stream << "dnnl_bn";
-      args = BatchNorm(call);
+      ret = generate_body(call, "dnnl_bn", BatchNorm(call), {});
     } else if (IsOp(call, "add")) {
-      decl_stream << "dnnl_add";
-      args = Add(call);
+      ret = generate_body(call, "dnnl_add", Add(call), {});
     } else {
       LOG(FATAL) << "Unsupported op: " << AsText(call->op, false);
     }
 
-    // Make function call with input buffers when visiting arguments
-    bool first = true;
-    decl_stream << "(";
-    for (size_t i = 0; i < call->args.size(); ++i) {
-      VisitExpr(call->args[i]);
-      for (auto out : out_) {
-        if (!first) {
-          decl_stream << ", ";
-        }
-        first = false;
-        decl_stream << out.name;
-      }
-    }
+    buf_decl_.push_back(ret.buf);
+    ext_func_body.push_back(ret.decl);
 
-    // Analyze the output buffer
     auto type_node = call->checked_type().as<TensorTypeNode>();
     CHECK(type_node);
-    const auto& dtype = GetDtypeString(type_node);
-    std::string out = "buf_" + std::to_string(buf_idx_++);
-    auto out_shape = GetShape(call->checked_type());
-    int out_size = 1;
-    for (size_t i = 0; i < out_shape.size(); ++i) {
-      out_size *= out_shape[i];
-    }
-    this->PrintIndents();
-    buf_stream << "float* " << out << " = (float*)std::malloc(4 * " << out_size << ");";
-    buf_decl_.push_back(buf_stream.str());
-    decl_stream << ", " << out;
-
-    // Attach attribute arguments
-    for (size_t i = 0; i < args.size(); ++i) {
-      decl_stream << ", " << args[i];
-    }
-    decl_stream << ");";
-    ext_func_body.push_back(decl_stream.str());
 
     // Update output buffer
     out_.clear();
     Output output;
-    output.name = out;
-    output.dtype = dtype;
+    output.name = ret.out;
+    output.dtype = GetDtypeString(type_node);
     output.need_copy = true;
-    output.size = out_size;
+    output.size = ret.out_size;
     out_.push_back(output);
+    ext_fused_func_args_.clear();
   }
 
   std::string JIT(void) {
@@ -133,6 +206,22 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
   }
 
  private:
+  const CallNode* DetectFusedConv2DBiasReLU(const CallNode* call) {
+    if (!IsOp(call, "nn.relu")) return nullptr;
+    auto relu_arg = call->args[0];
+    const CallNode* add_call = relu_arg.as<CallNode>();
+    if (!add_call || !IsOp(add_call, "add")) return nullptr;
+    auto add_arg = add_call->args[0];
+    const CallNode* conv_call = add_arg.as<CallNode>();
+    if (!conv_call || !IsOp(conv_call, "nn.conv2d")) return nullptr;
+
+    VisitExpr(add_call->args[1]);
+    CHECK_EQ(ext_fused_func_args_.size(), 0);
+    CHECK_EQ(out_.size(), 1) << "Expected only one constant (bias)";
+    ext_fused_func_args_.push_back(out_[0].name);
+    return conv_call;
+  }
+
   std::vector<std::string> Conv2d(const CallNode* call) {
     std::vector<std::string> args;
     const auto* conv2d_attr = call->attrs.as<Conv2DAttrs>();
@@ -157,6 +246,10 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     args.push_back(std::to_string(conv2d_attr->strides[1].as<IntImmNode>()->value));
 
     return args;
+  }
+
+  std::vector<std::string> FusedConv2dBiasReLU(const CallNode* call) {
+    return Conv2d(call);
   }
 
   std::vector<std::string> Dense(const CallNode* call) {
@@ -219,14 +312,20 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
    * output to a buffer that may be consumed by other kernels.
    */
   int buf_idx_{0};
+  /*! \brief The index of global constants. */
+  int const_idx_ = 0;
   /*! \brief The arguments used by a wrapped function that calls DNNL kernels. */
   Array<Var> ext_func_args_;
+  /*! TODO */
+  std::vector<std::string> ext_fused_func_args_;
   /*! \brief statement of the function that will be compiled using DNNL kernels. */
   std::vector<std::string> ext_func_body;
   /*! \brief The declaration of intermeidate buffers. */
   std::vector<std::string> buf_decl_;
   /*! \brief The name of the the outputs. */
   std::vector<Output> out_;
+  /*! \brief The cached expressions. */
+  std::unordered_map<Expr, Output, ObjectHash, ObjectEqual> visited_;
 };
 
 /*!
