@@ -263,6 +263,7 @@ class CodegenCBase {
 
     // Create the wrapper to call the ext_func
     this->GenerateBackendCFunc(ext_func_id, args, out[0]);
+    LOG(INFO) << code_stream_.str();
     return code_stream_.str();
   }
 
