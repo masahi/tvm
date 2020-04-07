@@ -21,8 +21,8 @@ import numpy as np
 
 import tvm
 import tvm.relay.testing
-from tvm import relay
-from tvm import runtime
+from tvm import relay, runtime
+from tvm.ir import module
 from tvm.runtime import container
 from tvm.relay import transform
 from tvm.contrib import util
@@ -896,9 +896,9 @@ def test_partition_conv_bias_relu():
 
     def get_net(include_bn=True, include_sigmoid=False):
         data = relay.var("data", relay.TensorType((1, 3, 224, 224), "float32"))
-        layer1 = get_blocks("layer1_", data, 3, 1, include_bn, include_sigmoid)
+        layer1 = get_blocks("layer1_", data, 3, 8, include_bn, include_sigmoid)
         layer2 = get_blocks("layer2_", layer1, 8, 8, include_bn, include_sigmoid)
-        return relay.Function(relay.analysis.free_vars(layer1), layer1)
+        return relay.Function(relay.analysis.free_vars(layer2), layer2)
 
     def pre_optimize(mod, params):
         remove_bn_pass = transform.Sequential([
@@ -917,14 +917,15 @@ def test_partition_conv_bias_relu():
         return mod
 
     def get_partitoned_mod(mod, params):
-        mod = pre_optimize(mod, params)
         pattern_table = [
             ("dnnl.conv_bias_relu", make_pattern())
         ]
+        mod = pre_optimize(mod, params)
         composite_pass = relay.transform.MergeComposite(pattern_table)
         mod["main"] = run_opt_pass(mod["main"], composite_pass)
         mod = transform.AnnotateTarget("dnnl")(mod)
-        return transform.PartitionGraph()(mod)
+        mod = transform.PartitionGraph()(mod)
+        return mod
 
     def test_detect_pattern(include_bn, include_sigmoid, num_expected_partition):
         net = get_net(include_bn, include_sigmoid)
@@ -943,7 +944,8 @@ def test_partition_conv_bias_relu():
     def test_partition_mobilenet():
         mod, params = relay.testing.mobilenet.get_workload()
         mod = get_partitoned_mod(mod, params)
-        assert(len(mod.functions) - 1 == 27)
+        # 27 fused conv + bn + relu and one dense
+        assert(len(mod.functions) - 1 == 28)  # -1 for main
 
     def test_exec(mod, params, ref_mod, ref_params, out_shape):
         ishape = (1, 3, 224, 224)
@@ -953,31 +955,30 @@ def test_partition_conv_bias_relu():
         compile_engine.get().clear()
 
         mod = get_partitoned_mod(mod, params)
-        print(mod)
 
         check_result(mod, {"data": i_data},
                      out_shape, ref_res.asnumpy(), tol=1e-5, params=params)
 
-    # test_partition()
-    # test_partition_mobilenet()
+    test_partition()
+    test_partition_mobilenet()
 
     # exec test on mobilenet is not possible due to manually inlined constants
     net = get_net()
     mod, params = tvm.relay.testing.create_workload(net)
     ref_mod, ref_params = tvm.relay.testing.create_workload(net)
-    test_exec(mod, params, ref_mod, ref_params, (1, 1, 224, 224))
+    test_exec(mod, params, ref_mod, ref_params, (1, 8, 224, 224))
 
 
 if __name__ == "__main__":
-    # test_multi_node_compiler()
-    # test_extern_ccompiler_single_op()
-    # test_extern_ccompiler_default_ops()
-    # test_extern_ccompiler()
-    # test_extern_dnnl()
-    # test_extern_dnnl_mobilenet()
-    # test_function_lifting()
-    # test_function_lifting_inline()
-    # test_constant_propagation()
-    # test_multiple_outputs()
-    # test_mixed_single_multiple_outputs()
+    test_multi_node_compiler()
+    test_extern_ccompiler_single_op()
+    test_extern_ccompiler_default_ops()
+    test_extern_ccompiler()
+    test_extern_dnnl()
+    test_extern_dnnl_mobilenet()
+    test_function_lifting()
+    test_function_lifting_inline()
+    test_constant_propagation()
+    test_multiple_outputs()
+    test_mixed_single_multiple_outputs()
     test_partition_conv_bias_relu()

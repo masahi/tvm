@@ -51,7 +51,6 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     Output output;
     output.name = node->name_hint();
     out_.push_back(output);
-    LOG(INFO) << "Visited var:" << node->name_hint();
   }
 
   void VisitExpr_(const ConstantNode* cn) final {
@@ -60,7 +59,6 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
       out_.push_back(visited_[constant]);
       return;
     }
-    LOG(INFO) << "Visiting constant";
 
     out_.clear();
     Output output;
@@ -93,47 +91,34 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     // Do nothing
   }
 
-  void VisitExpr_(const FunctionNode* func) final {
-    const auto comp_name = func->GetAttr<tir::StringImm>(attr::kComposite);
-    if (comp_name.defined()) {
-      LOG(INFO) << "comp_name:" << comp_name;
-      current_composite_name = comp_name->value;
-    }
-    for (const auto& p : func->params) {
-      VisitExpr(p);
-    }
-    VisitExpr(func->body);
-    current_composite_name = "";
-  }
-
   void VisitExpr_(const CallNode* call) final {
-    if (const auto* func = call->op.as<FunctionNode>()) {
-      VisitExpr(call->op);
-      for (size_t i = 0; i < call->args.size(); ++i) {
-        VisitExpr(call->args[i]);
-      }
-      return;
-    }
-
-    CHECK(call->op.as<OpNode>());
-
-    LOG(INFO) << "current_composite_name: " << current_composite_name;
-
     GenerateBodyOutput ret;
-    if (current_composite_name == "dnnl.conv_bias_relu") {
-      const auto* conv_call = GetRootConv2DCall(call);
-      ret = GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", FusedConv2dBiasReLU(conv_call),
-                         ext_fused_func_args_);
+    if (const auto* func = call->op.as<FunctionNode>()) {
+      const auto comp_name = func->GetAttr<tir::StringImm>(attr::kComposite);
+      if (comp_name.defined() && comp_name->value == "dnnl.conv_bias_relu") {
+        LOG(INFO) << "comp_name:" << comp_name;
+        const auto* relu_call = func->body.as<CallNode>();
+        CHECK(relu_call);
+        const auto* conv_call = GetRootConv2DCall(relu_call);
+
+        std::vector<std::string> func_args;
+        for (size_t i = 0; i < call->args.size(); ++i) {
+          VisitExpr(call->args[i]);
+          func_args.push_back(out_[0].name);
+        }
+        ret = GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", func_args,
+                           FusedConv2dBiasReLU(conv_call));
+      }
     } else if (IsOp(call, "nn.conv2d")) {
-      ret = GenerateBody(call, "dnnl_conv2d", Conv2d(call), {});
+      ret = GenerateBody(call, "dnnl_conv2d", Conv2d(call));
     } else if (IsOp(call, "nn.dense")) {
-      ret = GenerateBody(call, "dnnl_dense", Dense(call), {});
+      ret = GenerateBody(call, "dnnl_dense", Dense(call));
     } else if (IsOp(call, "nn.relu")) {
-      ret = GenerateBody(call, "dnnl_relu", Relu(call), {});
+      ret = GenerateBody(call, "dnnl_relu", Relu(call));
     } else if (IsOp(call, "nn.batch_norm")) {
-      ret = GenerateBody(call, "dnnl_bn", BatchNorm(call), {});
+      ret = GenerateBody(call, "dnnl_bn", BatchNorm(call));
     } else if (IsOp(call, "add")) {
-      ret = GenerateBody(call, "dnnl_add", Add(call), {});
+      ret = GenerateBody(call, "dnnl_add", Add(call));
     } else {
       LOG(FATAL) << "Unsupported op: " << AsText(call->op, false);
     }
@@ -152,7 +137,6 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     output.need_copy = true;
     output.size = ret.out_size;
     out_.push_back(output);
-    ext_fused_func_args_.clear();
   }
 
   std::string JIT(void) {
@@ -166,27 +150,27 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     std::string out;
   };
 
-  GenerateBodyOutput
-  GenerateBody(const CallNode* root_call, const std::string& func_name,
-               const std::vector<std::string>& args,
-               const std::vector<std::string>& fused_func_args) {
-    // Make function call with input buffers when visiting arguments
-    bool first = true;
-    std::ostringstream decl_stream;
-    decl_stream << "(";
+  GenerateBodyOutput GenerateBody(const CallNode* root_call, const std::string& func_name,
+                                  const std::vector<std::string>& attribute_args) {
+    std::vector<std::string> func_args;
     for (size_t i = 0; i < root_call->args.size(); ++i) {
       VisitExpr(root_call->args[i]);
       for (auto out : out_) {
-        if (!first) {
-          decl_stream << ", ";
-        }
-        first = false;
-        decl_stream << out.name;
+        func_args.push_back(out.name);
       }
     }
+    return GenerateBody(root_call, func_name, func_args, attribute_args);
+  }
 
-    for (auto arg_name : fused_func_args) {
-      decl_stream << ", " << arg_name;
+  GenerateBodyOutput GenerateBody(const CallNode* root_call, const std::string& func_name,
+                                  const std::vector<std::string>& func_args,
+                                  const std::vector<std::string>& attribute_args) {
+    // Make function call with input buffers when visiting arguments
+    CHECK(func_args.size() > 0);
+    std::ostringstream decl_stream;
+    decl_stream << "(" << func_args[0];
+    for (size_t i = 1; i < func_args.size(); ++i) {
+      decl_stream << ", " << func_args[i];
     }
 
     // Analyze the output buffer
@@ -208,12 +192,11 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
 
     decl_stream << ", " << ret.out;
     // Attach attribute arguments
-    for (size_t i = 0; i < args.size(); ++i) {
-      decl_stream << ", " << args[i];
+    for (size_t i = 0; i < attribute_args.size(); ++i) {
+      decl_stream << ", " << attribute_args[i];
     }
     decl_stream << ");";
     ret.decl = func_name + decl_stream.str();
-
     return ret;
   }
 
@@ -225,13 +208,6 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     const auto add_arg = add_call->args[0];
     const CallNode* conv_call = add_arg.as<CallNode>();
     CHECK(conv_call && IsOp(conv_call, "nn.conv2d"));
-
-    LOG(INFO) << "fused call detected";
-    VisitExpr(add_call->args[1]);
-
-    CHECK_EQ(ext_fused_func_args_.size(), 0);
-    CHECK_EQ(out_.size(), 1) << "Expected only one constant (bias)";
-    ext_fused_func_args_.push_back(out_[0].name);
     return conv_call;
   }
 
@@ -329,8 +305,6 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
   int const_idx_ = 0;
   /*! \brief The arguments used by a wrapped function that calls DNNL kernels. */
   Array<Var> ext_func_args_;
-  /*! TODO */
-  std::vector<std::string> ext_fused_func_args_;
   /*! \brief statement of the function that will be compiled using DNNL kernels. */
   std::vector<std::string> ext_func_body;
   /*! \brief The declaration of intermeidate buffers. */
@@ -339,8 +313,6 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
   std::vector<Output> out_;
   /*! \brief The cached expressions. */
   std::unordered_map<Expr, Output, ObjectHash, ObjectEqual> visited_;
-  /*! TODO*/
-  std::string current_composite_name = "";
 };
 
 /*!
