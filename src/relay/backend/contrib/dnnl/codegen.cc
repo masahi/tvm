@@ -51,6 +51,7 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     Output output;
     output.name = node->name_hint();
     out_.push_back(output);
+    LOG(INFO) << "Visited var:" << node->name_hint();
   }
 
   void VisitExpr_(const ConstantNode* cn) final {
@@ -64,6 +65,7 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     out_.clear();
     Output output;
     output.name = "const_" + std::to_string(const_idx_++);
+    output.dtype = "float";
     out_.push_back(output);
     visited_[constant] = output;
 
@@ -106,7 +108,11 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
 
   void VisitExpr_(const CallNode* call) final {
     if (const auto* func = call->op.as<FunctionNode>()) {
-      return VisitExpr(call->op);
+      VisitExpr(call->op);
+      for (size_t i = 0; i < call->args.size(); ++i) {
+        VisitExpr(call->args[i]);
+      }
+      return;
     }
 
     CHECK(call->op.as<OpNode>());

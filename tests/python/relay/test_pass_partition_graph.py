@@ -896,9 +896,9 @@ def test_partition_conv_bias_relu():
 
     def get_net(include_bn=True, include_sigmoid=False):
         data = relay.var("data", relay.TensorType((1, 3, 224, 224), "float32"))
-        layer1 = get_blocks("layer1_", data, 3, 8, include_bn, include_sigmoid)
+        layer1 = get_blocks("layer1_", data, 3, 1, include_bn, include_sigmoid)
         layer2 = get_blocks("layer2_", layer1, 8, 8, include_bn, include_sigmoid)
-        return relay.Function(relay.analysis.free_vars(layer2), layer2)
+        return relay.Function(relay.analysis.free_vars(layer1), layer1)
 
     def pre_optimize(mod, params):
         remove_bn_pass = transform.Sequential([
@@ -953,18 +953,19 @@ def test_partition_conv_bias_relu():
         compile_engine.get().clear()
 
         mod = get_partitoned_mod(mod, params)
+        print(mod)
 
         check_result(mod, {"data": i_data},
                      out_shape, ref_res.asnumpy(), tol=1e-5, params=params)
 
-    test_partition()
+    # test_partition()
     # test_partition_mobilenet()
 
     # exec test on mobilenet is not possible due to manually inlined constants
-    # net = get_net()
-    # mod, params = tvm.relay.testing.create_workload(net)
-    # ref_mod, ref_params = tvm.relay.testing.create_workload(net)
-    # test_exec(mod, params, ref_mod, ref_params, (1, 8, 224, 224))
+    net = get_net()
+    mod, params = tvm.relay.testing.create_workload(net)
+    ref_mod, ref_params = tvm.relay.testing.create_workload(net)
+    test_exec(mod, params, ref_mod, ref_params, (1, 1, 224, 224))
 
 
 if __name__ == "__main__":
