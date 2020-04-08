@@ -42,7 +42,7 @@ namespace contrib {
 
 using namespace backend;
 
-const CallNode* GetRootConv2DCall(const CallNode* relu_call) {
+const CallNode* GetRootConv2DCall(const CallNode* relu_call, int depth) {
   CHECK(relu_call && IsOp(relu_call, "nn.relu"));
   const auto relu_arg = relu_call->args[0];
   const CallNode* add_call = relu_arg.as<CallNode>();
@@ -231,7 +231,7 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     CHECK(op_node) << "OpNode expected, got something else";
 
     using ArgFunType = std::function<std::vector<std::string>(const CallNode*)>;
-    const std::map<std::string, std::pair<std::string, ArgFunType>> op_map = {
+    static const std::map<std::string, std::pair<std::string, ArgFunType>> op_map = {
         {"nn.conv2d", {"dnnl_conv2d", Conv2d}},
         {"nn.dense", {"dnnl_dense", Dense}},
         {"nn.relu", {"dnnl_relu", Relu}},
@@ -253,11 +253,16 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
                                                    const CallNode* caller) {
     const auto comp_name = callee->GetAttr<tir::StringImm>(attr::kComposite);
     CHECK(comp_name.defined()) << "Only functions with composite attribute supported";
-    if (comp_name->value == "dnnl.conv_bias_relu") {
-      const auto* conv_call = GetRootConv2DCall(callee->body.as<CallNode>());
+    if (comp_name->value == "dnnl.conv2d_bias_relu") {
+      const auto* conv_call = GetRootConv2DCall(callee->body.as<CallNode>(), 3);
       return GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", GetArgumentNames(caller),
                           Conv2d(conv_call));
+    } else if (comp_name->value == "dnnl.conv2d_relu") {
+      const auto* conv_call = GetRootConv2DCall(callee->body.as<CallNode>(), 2);
+      return GenerateBody(conv_call, "dnnl_fused_conv2d_relu", GetArgumentNames(caller),
+                          Conv2d(conv_call));
     }
+
     LOG(FATAL) << "Unknown composite function:" << comp_name;
     return GenerateBodyOutput{};
   }
