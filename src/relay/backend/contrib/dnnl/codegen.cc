@@ -233,7 +233,7 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
 
   GenerateBodyOutput GenerateOpCall(const CallNode* call) {
     const auto* op_node = call->op.as<OpNode>();
-    CHECK(op_node) << "Expect OpNode, but got " << call->GetTypeKey();
+    CHECK(op_node) << "Expect OpNode, but got " << call->op->GetTypeKey();
 
     using ArgFunType = std::function<std::vector<std::string>(const CallNode*)>;
     static const std::map<std::string, std::pair<std::string, ArgFunType>> op_map = {
