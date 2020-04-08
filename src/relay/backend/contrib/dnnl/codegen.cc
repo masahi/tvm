@@ -152,7 +152,7 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     if (comp_name.defined() && comp_name->value == "dnnl.conv_bias_relu") {
       const auto* conv_call = GetRootConv2DCall(callee->body.as<CallNode>());
       return GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", GetArgumentNames(caller),
-                          FusedConv2dBiasReLU(conv_call));
+                          Conv2d(conv_call));
     }
     LOG(FATAL) << "Unsupported composite:" << comp_name;
     return GenerateBodyOutput{};
@@ -236,10 +236,6 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     args.push_back(std::to_string(conv2d_attr->strides[1].as<IntImmNode>()->value));
 
     return args;
-  }
-
-  std::vector<std::string> FusedConv2dBiasReLU(const CallNode* call) {
-    return Conv2d(call);
   }
 
   std::vector<std::string> Dense(const CallNode* call) {

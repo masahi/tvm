@@ -22,7 +22,6 @@ import numpy as np
 import tvm
 import tvm.relay.testing
 from tvm import relay, runtime
-from tvm.ir import module
 from tvm.runtime import container
 from tvm.relay import transform
 from tvm.contrib import util
@@ -30,7 +29,6 @@ from tvm.relay.op.annotation import compiler_begin, compiler_end
 from tvm.relay.expr_functor import ExprMutator
 from tvm.relay.build_module import bind_params_by_name
 from tvm.relay.backend import compile_engine
-from tvm.relay.testing import run_opt_pass
 
 
 # Leverage the pass manager to write a simple white list based annotator
@@ -965,15 +963,15 @@ def test_partition_conv_bias_relu():
 
 
 if __name__ == "__main__":
-    # test_multi_node_compiler()
-    # test_extern_ccompiler_single_op()
-    # test_extern_ccompiler_default_ops()
-    # test_extern_ccompiler()
-    # test_extern_dnnl()
-    # test_extern_dnnl_mobilenet()
-    # test_function_lifting()
-    # test_function_lifting_inline()
-    # test_constant_propagation()
-    # test_multiple_outputs()
-    # test_mixed_single_multiple_outputs()
+    test_multi_node_compiler()
+    test_extern_ccompiler_single_op()
+    test_extern_ccompiler_default_ops()
+    test_extern_ccompiler()
+    test_extern_dnnl()
+    test_extern_dnnl_mobilenet()
+    test_function_lifting()
+    test_function_lifting_inline()
+    test_constant_propagation()
+    test_multiple_outputs()
+    test_mixed_single_multiple_outputs()
     test_partition_conv_bias_relu()
