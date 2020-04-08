@@ -94,21 +94,7 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
   void VisitExpr_(const CallNode* call) final {
     GenerateBodyOutput ret;
     if (const auto* func = call->op.as<FunctionNode>()) {
-      const auto comp_name = func->GetAttr<tir::StringImm>(attr::kComposite);
-      if (comp_name.defined() && comp_name->value == "dnnl.conv_bias_relu") {
-        LOG(INFO) << "comp_name:" << comp_name;
-        const auto* relu_call = func->body.as<CallNode>();
-        CHECK(relu_call);
-        const auto* conv_call = GetRootConv2DCall(relu_call);
-
-        std::vector<std::string> func_args;
-        for (size_t i = 0; i < call->args.size(); ++i) {
-          VisitExpr(call->args[i]);
-          func_args.push_back(out_[0].name);
-        }
-        ret = GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", func_args,
-                           FusedConv2dBiasReLU(conv_call));
-      }
+      ret = GenerateCompositeFunctionCall(func, call);
     } else if (IsOp(call, "nn.conv2d")) {
       ret = GenerateBody(call, "dnnl_conv2d", Conv2d(call));
     } else if (IsOp(call, "nn.dense")) {
@@ -150,16 +136,31 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     std::string out;
   };
 
-  GenerateBodyOutput GenerateBody(const CallNode* root_call, const std::string& func_name,
-                                  const std::vector<std::string>& attribute_args) {
-    std::vector<std::string> func_args;
-    for (size_t i = 0; i < root_call->args.size(); ++i) {
-      VisitExpr(root_call->args[i]);
+  std::vector<std::string> GetArgumentNames(const CallNode* call) {
+    std::vector<std::string> arg_names;
+    for (size_t i = 0; i < call->args.size(); ++i) {
+      VisitExpr(call->args[i]);
       for (auto out : out_) {
-        func_args.push_back(out.name);
+        arg_names.push_back(out.name);
       }
     }
-    return GenerateBody(root_call, func_name, func_args, attribute_args);
+    return arg_names;
+  }
+
+  GenerateBodyOutput GenerateCompositeFunctionCall(const FunctionNode* callee, const CallNode* caller) {
+    const auto comp_name = callee->GetAttr<tir::StringImm>(attr::kComposite);
+    if (comp_name.defined() && comp_name->value == "dnnl.conv_bias_relu") {
+      const auto* conv_call = GetRootConv2DCall(callee->body.as<CallNode>());
+      return GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", GetArgumentNames(caller),
+                          FusedConv2dBiasReLU(conv_call));
+    }
+    LOG(FATAL) << "Unsupported composite:" << comp_name;
+    return GenerateBodyOutput{};
+  }
+
+  GenerateBodyOutput GenerateBody(const CallNode* root_call, const std::string& func_name,
+                                  const std::vector<std::string>& attribute_args) {
+    return GenerateBody(root_call, func_name, GetArgumentNames(root_call), attribute_args);
   }
 
   GenerateBodyOutput GenerateBody(const CallNode* root_call, const std::string& func_name,

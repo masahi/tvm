@@ -900,32 +900,27 @@ def test_partition_conv_bias_relu():
         layer2 = get_blocks("layer2_", layer1, 8, 8, include_bn, include_sigmoid)
         return relay.Function(relay.analysis.free_vars(layer2), layer2)
 
-    def pre_optimize(mod, params):
-        remove_bn_pass = transform.Sequential([
-            relay.transform.InferType(),
-            relay.transform.SimplifyInference(),
-            relay.transform.FoldConstant(),
-            relay.transform.FoldScaleAxis(),
-        ])
-
+    def get_partitoned_mod(mod, params):
         # This is required for constant folding
         mod["main"] = bind_params_by_name(mod["main"], params)
-
-        with relay.build_config(opt_level=3, disabled_pass=["AlterOpLayout"]):
-            mod = remove_bn_pass(mod)
-
-        return mod
-
-    def get_partitoned_mod(mod, params):
         pattern_table = [
             ("dnnl.conv_bias_relu", make_pattern())
         ]
-        mod = pre_optimize(mod, params)
-        composite_pass = relay.transform.MergeComposite(pattern_table)
-        mod["main"] = run_opt_pass(mod["main"], composite_pass)
-        mod = transform.AnnotateTarget("dnnl")(mod)
-        mod = transform.PartitionGraph()(mod)
-        return mod
+        remove_bn_pass = transform.Sequential([
+            transform.InferType(),
+            transform.SimplifyInference(),
+            transform.FoldConstant(),
+            transform.FoldScaleAxis(),
+        ])
+        composite_partition = transform.Sequential([
+            remove_bn_pass,
+            transform.MergeComposite(pattern_table),
+            transform.AnnotateTarget("dnnl"),
+            transform.PartitionGraph()
+        ])
+
+        with relay.build_config(opt_level=3, disabled_pass=["AlterOpLayout"]):
+            return composite_partition(mod)
 
     def test_detect_pattern(include_bn, include_sigmoid, num_expected_partition):
         net = get_net(include_bn, include_sigmoid)
@@ -970,15 +965,15 @@ def test_partition_conv_bias_relu():
 
 
 if __name__ == "__main__":
-    test_multi_node_compiler()
-    test_extern_ccompiler_single_op()
-    test_extern_ccompiler_default_ops()
-    test_extern_ccompiler()
-    test_extern_dnnl()
-    test_extern_dnnl_mobilenet()
-    test_function_lifting()
-    test_function_lifting_inline()
-    test_constant_propagation()
-    test_multiple_outputs()
-    test_mixed_single_multiple_outputs()
+    # test_multi_node_compiler()
+    # test_extern_ccompiler_single_op()
+    # test_extern_ccompiler_default_ops()
+    # test_extern_ccompiler()
+    # test_extern_dnnl()
+    # test_extern_dnnl_mobilenet()
+    # test_function_lifting()
+    # test_function_lifting_inline()
+    # test_constant_propagation()
+    # test_multiple_outputs()
+    # test_mixed_single_multiple_outputs()
     test_partition_conv_bias_relu()
