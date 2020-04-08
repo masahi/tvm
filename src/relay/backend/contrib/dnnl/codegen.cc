@@ -30,8 +30,8 @@
 #include <tvm/runtime/registry.h>
 
 #include <fstream>
-#include <sstream>
 #include <numeric>
+#include <sstream>
 
 #include "../codegen_c/codegen_c.h"
 
@@ -147,14 +147,16 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     return arg_names;
   }
 
-  GenerateBodyOutput GenerateCompositeFunctionCall(const FunctionNode* callee, const CallNode* caller) {
+  GenerateBodyOutput GenerateCompositeFunctionCall(const FunctionNode* callee,
+                                                   const CallNode* caller) {
     const auto comp_name = callee->GetAttr<tir::StringImm>(attr::kComposite);
-    if (comp_name.defined() && comp_name->value == "dnnl.conv_bias_relu") {
+    CHECK(comp_name.defined()) << "Only functions with composite attribute supported";
+    if (comp_name->value == "dnnl.conv_bias_relu") {
       const auto* conv_call = GetRootConv2DCall(callee->body.as<CallNode>());
       return GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", GetArgumentNames(caller),
                           Conv2d(conv_call));
     }
-    LOG(FATAL) << "Unsupported composite:" << comp_name;
+    LOG(FATAL) << "Unknown composite function:" << comp_name;
     return GenerateBodyOutput{};
   }
 
@@ -167,7 +169,7 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
                                   const std::vector<std::string>& func_args,
                                   const std::vector<std::string>& attribute_args) {
     // Make function call with input buffers when visiting arguments
-    CHECK(func_args.size() > 0);
+    CHECK_GT(func_args.size(), 0);
     std::ostringstream decl_stream;
     decl_stream << "(" << func_args[0];
     for (size_t i = 1; i < func_args.size(); ++i) {

@@ -22,8 +22,6 @@
  * \brief TVM compatible wrappers for dnnl kernels.
  */
 
-#include "dnnl_kernel.h"
-
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +31,8 @@
 #include <numeric>
 #include <string>
 #include <vector>
+
+#include "dnnl_kernel.h"
 
 namespace tvm {
 namespace runtime {
@@ -52,9 +52,8 @@ inline void read_from_dnnl_memory(void* handle, const memory& mem) {
   std::copy(src, src + bytes, reinterpret_cast<uint8_t*>(handle));
 }
 
-void dnnl_conv2d_common(float* data, float* weights, float* bias, float* out,
-                        int p_N_, int p_C_, int p_H_, int p_W_,
-                        int p_O_, int p_G_, int p_Ph_, int p_Pw_, int p_Kh_,
+void dnnl_conv2d_common(float* data, float* weights, float* bias, float* out, int p_N_, int p_C_,
+                        int p_H_, int p_W_, int p_O_, int p_G_, int p_Ph_, int p_Pw_, int p_Kh_,
                         int p_Kw_, int p_Sh_, int p_Sw_, primitive_attr attr) {
   using tag = memory::format_tag;
   using dt = memory::data_type;
@@ -73,8 +72,7 @@ void dnnl_conv2d_common(float* data, float* weights, float* bias, float* out,
   auto user_src_memory = memory({{conv2d_src_tz}, dt::f32, tag::nchw}, eng, data);
   auto user_weights_memory =
       memory({{conv2d_weights_tz}, dt::f32, (p_G_ > 1) ? tag::goihw : tag::oihw}, eng, weights);
-  auto conv2d_user_bias_memory =
-      memory({{conv2d_bias_tz}, dt::f32, tag::x}, eng, bias);
+  auto conv2d_user_bias_memory = memory({{conv2d_bias_tz}, dt::f32, tag::x}, eng, bias);
 
   auto conv2d_src_md = memory::desc({conv2d_src_tz}, dt::f32, tag::any);
   auto conv2d_bias_md = memory::desc({conv2d_bias_tz}, dt::f32, tag::any);
@@ -99,16 +97,13 @@ void dnnl_conv2d_common(float* data, float* weights, float* bias, float* out,
   read_from_dnnl_memory(out, conv2d_dst_memory);
 }
 
-extern "C" void dnnl_conv2d(float* data, float* weights, float* out,
-                            int p_N_, int p_C_, int p_H_, int p_W_,
-                            int p_O_, int p_G_, int p_Ph_, int p_Pw_,
-                            int p_Kh_, int p_Kw_, int p_Sh_, int p_Sw_) {
+extern "C" void dnnl_conv2d(float* data, float* weights, float* out, int p_N_, int p_C_, int p_H_,
+                            int p_W_, int p_O_, int p_G_, int p_Ph_, int p_Pw_, int p_Kh_,
+                            int p_Kw_, int p_Sh_, int p_Sw_) {
   primitive_attr attr;
   std::vector<float> bias(p_O_, 0);
-  return dnnl_conv2d_common(data, weights, bias.data(), out,
-                            p_N_, p_C_, p_H_, p_W_, p_O_, p_G_,
-                            p_Ph_, p_Pw_, p_Kh_, p_Kw_, p_Sh_, p_Sw_,
-                            attr);
+  return dnnl_conv2d_common(data, weights, bias.data(), out, p_N_, p_C_, p_H_, p_W_, p_O_, p_G_,
+                            p_Ph_, p_Pw_, p_Kh_, p_Kw_, p_Sh_, p_Sw_, attr);
 }
 
 primitive_attr create_attr_with_relu_post_op() {
@@ -125,15 +120,11 @@ extern "C" void dnnl_fused_conv2d_bias_relu(float* data, float* weights, float* 
                                             int p_N_, int p_C_, int p_H_, int p_W_, int p_O_,
                                             int p_G_, int p_Ph_, int p_Pw_, int p_Kh_, int p_Kw_,
                                             int p_Sh_, int p_Sw_) {
-  return dnnl_conv2d_common(data, weights, bias, out,
-                            p_N_, p_C_, p_H_, p_W_,
-                            p_O_, p_G_, p_Ph_, p_Pw_,
-                            p_Kh_, p_Kw_, p_Sh_, p_Sw_,
-                            create_attr_with_relu_post_op());
+  return dnnl_conv2d_common(data, weights, bias, out, p_N_, p_C_, p_H_, p_W_, p_O_, p_G_, p_Ph_,
+                            p_Pw_, p_Kh_, p_Kw_, p_Sh_, p_Sw_, create_attr_with_relu_post_op());
 }
 
-extern "C" void dnnl_dense(float* data, float* weight, float* out, int p_B_,
-                           int p_I_, int p_O_) {
+extern "C" void dnnl_dense(float* data, float* weight, float* out, int p_B_, int p_I_, int p_O_) {
   using tag = memory::format_tag;
   using dt = memory::data_type;
 
@@ -156,8 +147,8 @@ extern "C" void dnnl_dense(float* data, float* weight, float* out, int p_B_,
   auto bias_memory = memory(bias_md, eng, bias.data());
   auto dst_memory = memory(dst_md, eng);
 
-  auto dense_desc = inner_product_forward::desc(
-      prop_kind::forward_inference, data_md, weight_md, bias_md, dst_md);
+  auto dense_desc = inner_product_forward::desc(prop_kind::forward_inference, data_md, weight_md,
+                                                bias_md, dst_md);
   auto dense_prim_desc = inner_product_forward::primitive_desc(dense_desc, eng);
   assert(dst_md == dense_prim_desc.dst_desc());
 
@@ -170,8 +161,7 @@ extern "C" void dnnl_dense(float* data, float* weight, float* out, int p_B_,
   read_from_dnnl_memory(out, dst_memory);
 }
 
-extern "C" void dnnl_relu(float* data, float* out, int p_N_, int p_C_, int p_H_,
-                          int p_W_) {
+extern "C" void dnnl_relu(float* data, float* out, int p_N_, int p_C_, int p_H_, int p_W_) {
   using tag = memory::format_tag;
   using dt = memory::data_type;
 
@@ -185,8 +175,8 @@ extern "C" void dnnl_relu(float* data, float* out, int p_N_, int p_C_, int p_H_,
   auto data_memory = memory(data_md, eng, data);
   auto dst_memory = memory(data_md, eng);
 
-  auto relu_desc = eltwise_forward::desc(prop_kind::forward_inference,
-                                         algorithm::eltwise_relu, data_md, 0);
+  auto relu_desc =
+      eltwise_forward::desc(prop_kind::forward_inference, algorithm::eltwise_relu, data_md, 0);
   auto relu_prim_desc = eltwise_forward::primitive_desc(relu_desc, eng);
   assert(data_md == relu_prim_desc.dst_desc());
 
@@ -196,9 +186,8 @@ extern "C" void dnnl_relu(float* data, float* out, int p_N_, int p_C_, int p_H_,
   read_from_dnnl_memory(out, dst_memory);
 }
 
-extern "C" void dnnl_bn(float* data, float* gamma, float* beta, float* mean,
-                        float* variance, float* out, int p_N_, int p_C_,
-                        int p_H_, int p_W_, int p_E_) {
+extern "C" void dnnl_bn(float* data, float* gamma, float* beta, float* mean, float* variance,
+                        float* out, int p_N_, int p_C_, int p_H_, int p_W_, int p_E_) {
   using tag = memory::format_tag;
   using dt = memory::data_type;
 
@@ -214,8 +203,7 @@ extern "C" void dnnl_bn(float* data, float* gamma, float* beta, float* mean,
 
   auto bn_desc = batch_normalization_forward::desc(
       prop_kind::forward_inference, data_md, p_E_,
-      normalization_flags::use_global_stats |
-          normalization_flags::use_scale_shift);
+      normalization_flags::use_global_stats | normalization_flags::use_scale_shift);
   auto bn_prim_desc = batch_normalization_forward::primitive_desc(bn_desc, eng);
   assert(data_md == bn_prim_desc.dst_desc());
 
@@ -238,8 +226,8 @@ extern "C" void dnnl_bn(float* data, float* gamma, float* beta, float* mean,
   free(weight);
 }
 
-extern "C" void dnnl_add(float* data, float* weight, float* out, int p_N_,
-                         int p_C_, int p_H_, int p_W_) {
+extern "C" void dnnl_add(float* data, float* weight, float* out, int p_N_, int p_C_, int p_H_,
+                         int p_W_) {
   using tag = memory::format_tag;
   using dt = memory::data_type;
 
@@ -256,15 +244,14 @@ extern "C" void dnnl_add(float* data, float* weight, float* out, int p_N_,
   auto weight_memory = memory(weight_md, eng, weight);
   auto dst_memory = memory(dst_md, eng);
 
-  auto add_desc =
-      binary::desc(algorithm::binary_add, data_md, weight_md, dst_md);
+  auto add_desc = binary::desc(algorithm::binary_add, data_md, weight_md, dst_md);
   auto add_prim_desc = binary::primitive_desc(add_desc, eng);
   assert(dst_md == add_prim_desc.dst_desc());
 
   auto add = binary(add_prim_desc);
-  add.execute(s, {{DNNL_ARG_SRC_0, data_memory},
-                  {DNNL_ARG_SRC_1, weight_memory},
-                  {DNNL_ARG_DST, dst_memory}});
+  add.execute(
+      s,
+      {{DNNL_ARG_SRC_0, data_memory}, {DNNL_ARG_SRC_1, weight_memory}, {DNNL_ARG_DST, dst_memory}});
   s.wait();
   read_from_dnnl_memory(out, dst_memory);
 }

@@ -859,10 +859,6 @@ def test_mixed_single_multiple_outputs():
 
 
 def test_partition_conv_bias_relu():
-    if not tvm.get_global_func("relay.ext.dnnl", True):
-        print("skip because DNNL codegen is not available")
-        return
-
     def make_pattern():
         data = relay.var("data", relay.TensorType((1, 3, 224, 224), "float32"))
         weight = relay.var("weight")
@@ -956,6 +952,10 @@ def test_partition_conv_bias_relu():
     test_partition_mobilenet()
 
     # exec test on mobilenet is not possible due to manually inlined constants
+    if not tvm.get_global_func("relay.ext.dnnl", True):
+        print("skip because DNNL codegen is not available")
+        return
+
     net = get_net()
     mod, params = tvm.relay.testing.create_workload(net)
     ref_mod, ref_params = tvm.relay.testing.create_workload(net)
