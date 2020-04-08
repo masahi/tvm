@@ -25,18 +25,19 @@
 #define TVM_RELAY_BACKEND_UTILS_H_
 
 #include <dmlc/json.h>
-#include <tvm/relay/expr.h>
-#include <tvm/relay/type.h>
-#include <tvm/relay/transform.h>
 #include <tvm/driver/driver_api.h>
+#include <tvm/relay/expr.h>
+#include <tvm/relay/transform.h>
+#include <tvm/relay/type.h>
 #include <tvm/target/codegen.h>
-#include <tvm/tir/ir_pass.h>
 #include <tvm/te/operation.h>
+#include <tvm/tir/ir_pass.h>
 
-#include <typeinfo>
 #include <string>
+#include <typeinfo>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace tvm {
 namespace relay {
@@ -59,7 +60,7 @@ inline const PackedFunc* GetPackedFunc(const std::string& func_name) {
  */
 template <typename R, typename... Args>
 inline const runtime::TypedPackedFunc<R(Args...)> GetTypedPackedFunc(const std::string& func_name) {
-  auto *pf = GetPackedFunc(func_name);
+  auto* pf = GetPackedFunc(func_name);
   CHECK(pf != nullptr) << "can not find packed function";
   return runtime::TypedPackedFunc<R(Args...)>(*pf);
 }
@@ -90,9 +91,8 @@ inline std::string DType2String(const tvm::DataType dtype) {
  * \param params params dict
  * \return relay::Function
  */
-inline relay::Function
-BindParamsByName(relay::Function func,
-                 const std::unordered_map<std::string, runtime::NDArray>& params) {
+inline relay::Function BindParamsByName(
+    relay::Function func, const std::unordered_map<std::string, runtime::NDArray>& params) {
   std::unordered_map<std::string, relay::Var> name_dict;
   std::unordered_set<relay::Var, ObjectHash, ObjectEqual> repeat_var;
   for (auto arg : func->params) {
@@ -122,6 +122,36 @@ BindParamsByName(relay::Function func,
   return ret;
 }
 
+/*!
+ * \brief Extract the shape from a Relay tensor type.
+ * \param type The provided type.
+ * \return The extracted shape in a list.
+ */
+inline std::vector<int> GetShape(const Type& type) {
+  const auto* ttype = type.as<TensorTypeNode>();
+  CHECK(ttype) << "Expect TensorTypeNode";
+  std::vector<int> shape;
+  for (size_t i = 0; i < ttype->shape.size(); ++i) {
+    auto* val = ttype->shape[i].as<IntImmNode>();
+    CHECK(val);
+    shape.push_back(val->value);
+  }
+  return shape;
+}
+
+/*!
+ * \brief Check if a call has the provided name.
+ * \param call A Relay call node.
+ * \param op_name The name of the expected call.
+ * \return true if the call's name is equivalent to the given name. Otherwise,
+ * false.
+ */
+inline bool IsOp(const CallNode* call, const std::string& op_name) {
+  const auto* op_node = call->op.as<OpNode>();
+  CHECK(op_node) << "Expects a single op.";
+  Op op = GetRef<Op>(op_node);
+  return op == Op::Get(op_name);
+}
 }  // namespace backend
 }  // namespace relay
 }  // namespace tvm

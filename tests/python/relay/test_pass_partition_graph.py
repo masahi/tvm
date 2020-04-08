@@ -951,11 +951,11 @@ def test_partition_conv_bias_relu():
     test_partition()
     test_partition_mobilenet()
 
-    # exec test on mobilenet is not possible due to manually inlined constants
     if not tvm.get_global_func("relay.ext.dnnl", True):
         print("skip because DNNL codegen is not available")
         return
 
+    # exec test on mobilenet is not possible due to manually inlined constants
     net = get_net()
     mod, params = tvm.relay.testing.create_workload(net)
     ref_mod, ref_params = tvm.relay.testing.create_workload(net)

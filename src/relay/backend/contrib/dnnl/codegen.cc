@@ -33,11 +33,104 @@
 #include <numeric>
 #include <sstream>
 
+#include "../../utils.h"
 #include "../codegen_c/codegen_c.h"
 
 namespace tvm {
 namespace relay {
 namespace contrib {
+
+using namespace backend;
+
+const CallNode* GetRootConv2DCall(const CallNode* relu_call) {
+  CHECK(relu_call && IsOp(relu_call, "nn.relu"));
+  const auto relu_arg = relu_call->args[0];
+  const CallNode* add_call = relu_arg.as<CallNode>();
+  CHECK(add_call && IsOp(add_call, "add"));
+  const auto add_arg = add_call->args[0];
+  const CallNode* conv_call = add_arg.as<CallNode>();
+  CHECK(conv_call && IsOp(conv_call, "nn.conv2d"));
+  return conv_call;
+}
+
+std::vector<std::string> Conv2d(const CallNode* call) {
+  std::vector<std::string> args;
+  const auto* conv2d_attr = call->attrs.as<Conv2DAttrs>();
+  CHECK(conv2d_attr);
+
+  auto ishape = GetShape(call->args[0]->checked_type());
+  auto wshape = GetShape(call->args[1]->checked_type());
+
+  // Args: N, C, H, W
+  for (auto s : ishape) {
+    args.push_back(std::to_string(s));
+  }
+
+  // Args: O, G, Ph, Pw, Kh, Kw, Sh, Sw
+  args.push_back(std::to_string(wshape[0]));
+  args.push_back(std::to_string(conv2d_attr->groups));
+  args.push_back(std::to_string(conv2d_attr->padding[0].as<IntImmNode>()->value));
+  args.push_back(std::to_string(conv2d_attr->padding[1].as<IntImmNode>()->value));
+  args.push_back(std::to_string(wshape[2]));
+  args.push_back(std::to_string(wshape[3]));
+  args.push_back(std::to_string(conv2d_attr->strides[0].as<IntImmNode>()->value));
+  args.push_back(std::to_string(conv2d_attr->strides[1].as<IntImmNode>()->value));
+
+  return args;
+}
+
+std::vector<std::string> Dense(const CallNode* call) {
+  std::vector<std::string> args;
+  auto ishape = GetShape(call->args[0]->checked_type());
+  auto wshape = GetShape(call->args[1]->checked_type());
+
+  // Args: N, C, O
+  args.push_back(std::to_string(ishape[0]));
+  args.push_back(std::to_string(ishape[1]));
+  args.push_back(std::to_string(wshape[0]));
+
+  return args;
+}
+
+std::vector<std::string> Relu(const CallNode* call) {
+  std::vector<std::string> args;
+  auto ishape = GetShape(call->args[0]->checked_type());
+
+  // Args: N, C, H, W
+  for (auto s : ishape) {
+    args.push_back(std::to_string(s));
+  }
+
+  return args;
+}
+
+std::vector<std::string> BatchNorm(const CallNode* call) {
+  std::vector<std::string> args;
+  const auto* bn_attr = call->attrs.as<BatchNormAttrs>();
+  auto ishape = GetShape(call->args[0]->checked_type());
+
+  // Args: N, C, H, W
+  for (auto s : ishape) {
+    args.push_back(std::to_string(s));
+  }
+
+  // Args: epsilon
+  args.push_back(std::to_string(bn_attr->epsilon));
+
+  return args;
+}
+
+std::vector<std::string> Add(const CallNode* call) {
+  std::vector<std::string> args;
+  auto ishape = GetShape(call->args[0]->checked_type());
+
+  // Args: H, W
+  for (auto s : ishape) {
+    args.push_back(std::to_string(s));
+  }
+
+  return args;
+}
 
 // TODO(@zhiics, @comaniac): This is a basic implementation. We should implement
 // all utilities and make a base class for users to implement.
@@ -87,26 +180,12 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     ext_func_body.insert(ext_func_body.begin(), buf_stream.str());
   }
 
-  void VisitExpr_(const TupleGetItemNode* op) final {
-    // Do nothing
-  }
-
   void VisitExpr_(const CallNode* call) final {
     GenerateBodyOutput ret;
     if (const auto* func = call->op.as<FunctionNode>()) {
       ret = GenerateCompositeFunctionCall(func, call);
-    } else if (IsOp(call, "nn.conv2d")) {
-      ret = GenerateBody(call, "dnnl_conv2d", Conv2d(call));
-    } else if (IsOp(call, "nn.dense")) {
-      ret = GenerateBody(call, "dnnl_dense", Dense(call));
-    } else if (IsOp(call, "nn.relu")) {
-      ret = GenerateBody(call, "dnnl_relu", Relu(call));
-    } else if (IsOp(call, "nn.batch_norm")) {
-      ret = GenerateBody(call, "dnnl_bn", BatchNorm(call));
-    } else if (IsOp(call, "add")) {
-      ret = GenerateBody(call, "dnnl_add", Add(call));
     } else {
-      LOG(FATAL) << "Unsupported op: " << AsText(call->op, false);
+      ret = GenerateOpCall(call);
     }
 
     buf_decl_.push_back(ret.buf);
@@ -145,6 +224,29 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
       }
     }
     return arg_names;
+  }
+
+  GenerateBodyOutput GenerateOpCall(const CallNode* call) {
+    const auto* op_node = call->op.as<OpNode>();
+    CHECK(op_node) << "OpNode expected, got something else";
+
+    using ArgFunType = std::function<std::vector<std::string>(const CallNode*)>;
+    const std::map<std::string, std::pair<std::string, ArgFunType>> op_map = {
+        {"nn.conv2d", {"dnnl_conv2d", Conv2d}},
+        {"nn.dense", {"dnnl_dense", Dense}},
+        {"nn.relu", {"dnnl_relu", Relu}},
+        {"nn.batch_norm", {"dnnl_bn", BatchNorm}},
+        {"add", {"dnnl_add", Add}},
+    };
+
+    const auto op_name = GetRef<Op>(op_node)->name;
+    const auto iter = op_map.find(op_name);
+    if (iter != op_map.end()) {
+      return GenerateBody(call, iter->second.first, iter->second.second(call));
+    }
+
+    LOG(FATAL) << "Unsupported op: " << AsText(call->op, false);
+    return GenerateBodyOutput{};
   }
 
   GenerateBodyOutput GenerateCompositeFunctionCall(const FunctionNode* callee,
@@ -201,96 +303,6 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     decl_stream << ");";
     ret.decl = func_name + decl_stream.str();
     return ret;
-  }
-
-  const CallNode* GetRootConv2DCall(const CallNode* relu_call) {
-    CHECK(relu_call && IsOp(relu_call, "nn.relu"));
-    const auto relu_arg = relu_call->args[0];
-    const CallNode* add_call = relu_arg.as<CallNode>();
-    CHECK(add_call && IsOp(add_call, "add"));
-    const auto add_arg = add_call->args[0];
-    const CallNode* conv_call = add_arg.as<CallNode>();
-    CHECK(conv_call && IsOp(conv_call, "nn.conv2d"));
-    return conv_call;
-  }
-
-  std::vector<std::string> Conv2d(const CallNode* call) {
-    std::vector<std::string> args;
-    const auto* conv2d_attr = call->attrs.as<Conv2DAttrs>();
-    CHECK(conv2d_attr);
-
-    auto ishape = GetShape(call->args[0]->checked_type());
-    auto wshape = GetShape(call->args[1]->checked_type());
-
-    // Args: N, C, H, W
-    for (auto s : ishape) {
-      args.push_back(std::to_string(s));
-    }
-
-    // Args: O, G, Ph, Pw, Kh, Kw, Sh, Sw
-    args.push_back(std::to_string(wshape[0]));
-    args.push_back(std::to_string(conv2d_attr->groups));
-    args.push_back(std::to_string(conv2d_attr->padding[0].as<IntImmNode>()->value));
-    args.push_back(std::to_string(conv2d_attr->padding[1].as<IntImmNode>()->value));
-    args.push_back(std::to_string(wshape[2]));
-    args.push_back(std::to_string(wshape[3]));
-    args.push_back(std::to_string(conv2d_attr->strides[0].as<IntImmNode>()->value));
-    args.push_back(std::to_string(conv2d_attr->strides[1].as<IntImmNode>()->value));
-
-    return args;
-  }
-
-  std::vector<std::string> Dense(const CallNode* call) {
-    std::vector<std::string> args;
-    auto ishape = GetShape(call->args[0]->checked_type());
-    auto wshape = GetShape(call->args[1]->checked_type());
-
-    // Args: N, C, O
-    args.push_back(std::to_string(ishape[0]));
-    args.push_back(std::to_string(ishape[1]));
-    args.push_back(std::to_string(wshape[0]));
-
-    return args;
-  }
-
-  std::vector<std::string> Relu(const CallNode* call) {
-    std::vector<std::string> args;
-    auto ishape = GetShape(call->args[0]->checked_type());
-
-    // Args: N, C, H, W
-    for (auto s : ishape) {
-      args.push_back(std::to_string(s));
-    }
-
-    return args;
-  }
-
-  std::vector<std::string> BatchNorm(const CallNode* call) {
-    std::vector<std::string> args;
-    const auto* bn_attr = call->attrs.as<BatchNormAttrs>();
-    auto ishape = GetShape(call->args[0]->checked_type());
-
-    // Args: N, C, H, W
-    for (auto s : ishape) {
-      args.push_back(std::to_string(s));
-    }
-
-    // Args: epsilon
-    args.push_back(std::to_string(bn_attr->epsilon));
-
-    return args;
-  }
-
-  std::vector<std::string> Add(const CallNode* call) {
-    std::vector<std::string> args;
-    auto ishape = GetShape(call->args[0]->checked_type());
-
-    // Args: H, W
-    for (auto s : ishape) {
-      args.push_back(std::to_string(s));
-    }
-
-    return args;
   }
 
   /*! \brief The id of the external dnnl ext_func. */
