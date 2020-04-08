@@ -245,12 +245,11 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
 
     if (pattern_name->value == "dnnl.conv2d_bias_relu") {
       const auto* conv_call =
-          GetRootConv2DCall(callee->body.as<CallNode>(), 2, {"nn.conv2d", "add", "nn.relu"});
+          GetRootCall(callee->body.as<CallNode>(), 2, {"nn.conv2d", "add", "nn.relu"});
       return GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", GetArgumentNames(caller),
                           Conv2d(conv_call));
     } else if (pattern_name->value == "dnnl.conv2d_relu") {
-      const auto* conv_call =
-          GetRootConv2DCall(callee->body.as<CallNode>(), 1, {"nn.conv2d", "nn.relu"});
+      const auto* conv_call = GetRootCall(callee->body.as<CallNode>(), 1, {"nn.conv2d", "nn.relu"});
       return GenerateBody(conv_call, "dnnl_fused_conv2d_relu", GetArgumentNames(caller),
                           Conv2d(conv_call));
     }
