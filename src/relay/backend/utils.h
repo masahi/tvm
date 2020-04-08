@@ -152,8 +152,35 @@ inline bool IsOp(const CallNode* call, const std::string& op_name) {
   Op op = GetRef<Op>(op_node);
   return op == Op::Get(op_name);
 }
+
+/*!
+ * \brief Retrieve the "root" conv2d op nested inside a fused call, such as conv2d + relu.
+ * \param call A Relay call node. Typically nn.relu when called the first time.
+ * \param depth The number of calls before conv2d call, counting from current_call.
+ * \param expected_op_names The names of ops in this fused call. Example: {"nn.conv2d", "add",
+ * "nn.relu"}
+ * \return conv2d op at the root
+ */
+
+inline const CallNode* GetRootConv2DCall(const CallNode* current_call, int depth,
+                                         const std::vector<std::string>& expected_op_names) {
+  CHECK(current_call && depth >= 0);
+
+  if (depth == 0) {
+    CHECK(IsOp(current_call, "nn.conv2d"));
+    return current_call;
+  }
+
+  CHECK(depth < expected_op_names.size() && IsOp(current_call, expected_op_names[depth]));
+  CHECK_GT(current_call->args.size(), 0);
+
+  const auto* next_call = current_call->args[0].as<CallNode>();
+  return GetRootConv2DCall(next_call, depth - 1, expected_op_names);
+}
+
 }  // namespace backend
 }  // namespace relay
 }  // namespace tvm
+
 
 #endif  // TVM_RELAY_BACKEND_UTILS_H_

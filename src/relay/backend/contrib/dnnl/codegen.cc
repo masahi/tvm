@@ -42,22 +42,6 @@ namespace contrib {
 
 using namespace backend;
 
-const CallNode* GetRootConv2DCall(const CallNode* current_call, int depth,
-                                  const std::vector<std::string>& expected_op_names) {
-  CHECK(current_call && depth >= 0);
-
-  if (depth == 0) {
-    CHECK(IsOp(current_call, "nn.conv2d"));
-    return current_call;
-  }
-
-  CHECK(depth < expected_op_names.size() && IsOp(current_call, expected_op_names[depth]));
-  CHECK_GT(current_call->args.size(), 0);
-
-  const auto* next_call = current_call->args[0].as<CallNode>();
-  return GetRootConv2DCall(next_call, depth - 1, expected_op_names);
-}
-
 std::vector<std::string> Conv2d(const CallNode* call) {
   std::vector<std::string> args;
   const auto* conv2d_attr = call->attrs.as<Conv2DAttrs>();
