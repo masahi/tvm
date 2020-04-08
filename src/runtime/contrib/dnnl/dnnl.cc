@@ -116,6 +116,15 @@ primitive_attr create_attr_with_relu_post_op() {
   return attr;
 }
 
+extern "C" void dnnl_fused_conv2d_relu(float* data, float* weights, float* out, int p_N_, int p_C_,
+                                       int p_H_, int p_W_, int p_O_, int p_G_, int p_Ph_, int p_Pw_,
+                                       int p_Kh_, int p_Kw_, int p_Sh_, int p_Sw_) {
+  std::vector<float> bias(p_O_, 0);
+  return dnnl_conv2d_common(data, weights, bias.data(), out, p_N_, p_C_, p_H_, p_W_, p_O_, p_G_,
+                            p_Ph_, p_Pw_, p_Kh_, p_Kw_, p_Sh_, p_Sw_,
+                            create_attr_with_relu_post_op());
+}
+
 extern "C" void dnnl_fused_conv2d_bias_relu(float* data, float* weights, float* bias, float* out,
                                             int p_N_, int p_C_, int p_H_, int p_W_, int p_O_,
                                             int p_G_, int p_Ph_, int p_Pw_, int p_Kh_, int p_Kw_,

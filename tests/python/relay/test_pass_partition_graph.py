@@ -898,8 +898,8 @@ def test_dnnl_fuse():
     def get_net(include_bn=True, include_sigmoid=False):
         data = relay.var("data", relay.TensorType((1, 3, 224, 224), "float32"))
         block1 = get_blocks("block1_", data, 3, 8, include_bn, include_sigmoid)
-        # The second block is always conv + relu
-        block2 = get_blocks("block2_", block1, 8, 8, include_bn, include_sigmoid)
+        # The second block is always conv + relu, to make it more interesting
+        block2 = get_blocks("block2_", block1, 8, 8, False, include_sigmoid)
         return relay.Function(relay.analysis.free_vars(block2), block2)
 
     def get_partitoned_mod(mod, params, pattern_table):
@@ -927,7 +927,6 @@ def test_dnnl_fuse():
         net = get_net(include_bn, include_sigmoid)
         mod, params = tvm.relay.testing.create_workload(net)
         mod = get_partitoned_mod(mod, params, pattern_table)
-        print(mod)
         assert(len(mod.functions) - 1 == num_expected_partition)  # -1 for main
 
     def test_partition():
@@ -962,30 +961,34 @@ def test_dnnl_fuse():
         check_result(mod, {"data": i_data},
                      out_shape, ref_res.asnumpy(), tol=1e-5, params=params)
 
-    # test_partition()
-    # test_partition_mobilenet()
+    test_partition()
+    test_partition_mobilenet()
 
     if not tvm.get_global_func("relay.ext.dnnl", True):
         print("skip because DNNL codegen is not available")
         return
 
-    # exec test on mobilenet is not possible due to manually inlined constants
     net = get_net()
     mod, params = tvm.relay.testing.create_workload(net)
     ref_mod, ref_params = tvm.relay.testing.create_workload(net)
     test_exec(mod, params, ref_mod, ref_params, (1, 8, 224, 224))
 
+    # exec test on mobilenet is not possible due to manually inlined constants
+    # mod, params = relay.testing.mobilenet.get_workload()
+    # ref_mod, ref_params = relay.testing.mobilenet.get_workload()
+    # test_exec(mod, params, ref_mod, ref_params, (1, 1000))
+
 
 if __name__ == "__main__":
-    # test_multi_node_compiler()
-    # test_extern_ccompiler_single_op()
-    # test_extern_ccompiler_default_ops()
-    # test_extern_ccompiler()
-    # test_extern_dnnl()
-    # test_extern_dnnl_mobilenet()
-    # test_function_lifting()
-    # test_function_lifting_inline()
-    # test_constant_propagation()
-    # test_multiple_outputs()
-    # test_mixed_single_multiple_outputs()
+    test_multi_node_compiler()
+    test_extern_ccompiler_single_op()
+    test_extern_ccompiler_default_ops()
+    test_extern_ccompiler()
+    test_extern_dnnl()
+    test_extern_dnnl_mobilenet()
+    test_function_lifting()
+    test_function_lifting_inline()
+    test_constant_propagation()
+    test_multiple_outputs()
+    test_mixed_single_multiple_outputs()
     test_dnnl_fuse()

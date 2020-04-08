@@ -233,7 +233,7 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
 
   GenerateBodyOutput GenerateOpCall(const CallNode* call) {
     const auto* op_node = call->op.as<OpNode>();
-    CHECK(op_node) << "OpNode expected, got something else";
+    CHECK(op_node) << "Expect OpNode, but got " << call->GetTypeKey();
 
     using ArgFunType = std::function<std::vector<std::string>(const CallNode*)>;
     static const std::map<std::string, std::pair<std::string, ArgFunType>> op_map = {
@@ -256,20 +256,22 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
 
   GenerateBodyOutput GenerateCompositeFunctionCall(const FunctionNode* callee,
                                                    const CallNode* caller) {
-    const auto comp_name = callee->GetAttr<tir::StringImm>(attr::kComposite);
-    CHECK(comp_name.defined()) << "Only functions with composite attribute supported";
-    if (comp_name->value == "dnnl.conv2d_bias_relu") {
+    const auto pattern_name = callee->GetAttr<tir::StringImm>(attr::kComposite);
+    CHECK(pattern_name.defined()) << "Only functions with composite attribute supported";
+
+    if (pattern_name->value == "dnnl.conv2d_bias_relu") {
       const auto* conv_call =
           GetRootConv2DCall(callee->body.as<CallNode>(), 2, {"nn.conv2d", "add", "nn.relu"});
       return GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", GetArgumentNames(caller),
                           Conv2d(conv_call));
-    }  //  else if (comp_name->value == "dnnl.conv2d_relu") {
-    //   const auto* conv_call = GetRootConv2DCall(callee->body.as<CallNode>(), 2);
-    //   return GenerateBody(conv_call, "dnnl_fused_conv2d_relu", GetArgumentNames(caller),
-    //                       Conv2d(conv_call));
-    // }
+    } else if (pattern_name->value == "dnnl.conv2d_relu") {
+      const auto* conv_call =
+          GetRootConv2DCall(callee->body.as<CallNode>(), 1, {"nn.conv2d", "nn.relu"});
+      return GenerateBody(conv_call, "dnnl_fused_conv2d_relu", GetArgumentNames(caller),
+                          Conv2d(conv_call));
+    }
 
-    LOG(FATAL) << "Unknown composite function:" << comp_name;
+    LOG(FATAL) << "Unknown composite function:" << pattern_name;
     return GenerateBodyOutput{};
   }
 
