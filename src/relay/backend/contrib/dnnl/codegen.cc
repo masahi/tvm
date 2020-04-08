@@ -42,15 +42,20 @@ namespace contrib {
 
 using namespace backend;
 
-const CallNode* GetRootConv2DCall(const CallNode* relu_call, int depth) {
-  CHECK(relu_call && IsOp(relu_call, "nn.relu"));
-  const auto relu_arg = relu_call->args[0];
-  const CallNode* add_call = relu_arg.as<CallNode>();
-  CHECK(add_call && IsOp(add_call, "add"));
-  const auto add_arg = add_call->args[0];
-  const CallNode* conv_call = add_arg.as<CallNode>();
-  CHECK(conv_call && IsOp(conv_call, "nn.conv2d"));
-  return conv_call;
+const CallNode* GetRootConv2DCall(const CallNode* current_call, int depth,
+                                  const std::vector<std::string>& expected_op_names) {
+  CHECK(current_call && depth >= 0);
+
+  if (depth == 0) {
+    CHECK(IsOp(current_call, "nn.conv2d"));
+    return current_call;
+  }
+
+  CHECK(depth < expected_op_names.size() && IsOp(current_call, expected_op_names[depth]));
+  CHECK_GT(current_call->args.size(), 0);
+
+  const auto* next_call = current_call->args[0].as<CallNode>();
+  return GetRootConv2DCall(next_call, depth - 1, expected_op_names);
 }
 
 std::vector<std::string> Conv2d(const CallNode* call) {
@@ -254,14 +259,15 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
     const auto comp_name = callee->GetAttr<tir::StringImm>(attr::kComposite);
     CHECK(comp_name.defined()) << "Only functions with composite attribute supported";
     if (comp_name->value == "dnnl.conv2d_bias_relu") {
-      const auto* conv_call = GetRootConv2DCall(callee->body.as<CallNode>(), 3);
+      const auto* conv_call =
+          GetRootConv2DCall(callee->body.as<CallNode>(), 2, {"nn.conv2d", "add", "nn.relu"});
       return GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", GetArgumentNames(caller),
                           Conv2d(conv_call));
-    } else if (comp_name->value == "dnnl.conv2d_relu") {
-      const auto* conv_call = GetRootConv2DCall(callee->body.as<CallNode>(), 2);
-      return GenerateBody(conv_call, "dnnl_fused_conv2d_relu", GetArgumentNames(caller),
-                          Conv2d(conv_call));
-    }
+    }  //  else if (comp_name->value == "dnnl.conv2d_relu") {
+    //   const auto* conv_call = GetRootConv2DCall(callee->body.as<CallNode>(), 2);
+    //   return GenerateBody(conv_call, "dnnl_fused_conv2d_relu", GetArgumentNames(caller),
+    //                       Conv2d(conv_call));
+    // }
 
     LOG(FATAL) << "Unknown composite function:" << comp_name;
     return GenerateBodyOutput{};
