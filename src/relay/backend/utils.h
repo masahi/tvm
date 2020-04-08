@@ -164,8 +164,8 @@ inline bool IsOp(const CallNode* call, const std::string& op_name) {
 
 inline const CallNode* GetRootCall(const CallNode* current_call, int depth,
                                    const std::vector<std::string>& expected_op_names) {
-  CHECK(current_call && depth >= 0);
-  CHECK(depth < expected_op_names.size() && IsOp(current_call, expected_op_names[depth]));
+  CHECK(current_call && depth >= 0 && static_cast<size_t>(depth) < expected_op_names.size() &&
+        IsOp(current_call, expected_op_names[depth]));
 
   if (depth == 0) {
     return current_call;
