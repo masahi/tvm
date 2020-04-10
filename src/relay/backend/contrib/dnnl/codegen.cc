@@ -304,14 +304,14 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
       const std::string out = "buf_" + std::to_string(buf_idx_++);
       const auto out_size = GetShape1DSize(out_type);
       decl_stream << ", " << out;
-      buf_decl_.push_back("float* " + out + " = (float*)std::malloc(4 * " +
-                          std::to_string(out_size) + ");");
+
       Output output;
       output.name = out;
       output.size = out_size;
       output.dtype = GetDtypeString(out_type.as<TensorTypeNode>());
       output.need_copy = true;
-      ret.buffers.push_back(buf_decl_.back());
+      ret.buffers.push_back("float* " + out + " = (float*)std::malloc(4 * " +
+                            std::to_string(out_size) + ");");
       ret.outputs.push_back(output);
     }
 
