@@ -141,7 +141,6 @@ class CodegenDNNL : public ExprVisitor, public CodegenCBase {
   }
 
   void VisitExpr_(const TupleGetItemNode* op) final {
-    // Do nothing
     VisitExpr(op->tuple);
     CHECK(out_.size() > static_cast<size_t>(op->index));
 
