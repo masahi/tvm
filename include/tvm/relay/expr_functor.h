@@ -148,6 +148,39 @@ class ExprFunctor<R(const Expr& n, Args...)> {
 };
 
 /*!
+ * \brief A simple wrapper around ExprFunctor for a single argument case.
+ *  The result of visit is memoized.
+ */
+template <typename R>
+class MemoizedExprFunctor : public ::tvm::relay::ExprFunctor<R(const Expr&)> {
+  using BaseFunctor = ::tvm::relay::ExprFunctor<R(const Expr&)>;
+
+ public:
+  /*! \brief virtual destructor */
+  virtual ~MemoizedExprFunctor() {}
+
+  /*!
+   * \brief The functor call.
+   * \param n The expression node.
+   * \return The result of the call
+   */
+  virtual R VisitExpr(const Expr& n) override {
+    CHECK(n.defined());
+    auto it = memo_.find(n);
+    if (it != memo_.end()) {
+      return it->second;
+    }
+    auto res = BaseFunctor::VisitExpr(n);
+    memo_[n] = res;
+    return res;
+  }
+
+ protected:
+  /*! \brief Internal map used for memoization. */
+  std::unordered_map<Expr, R, ObjectHash, ObjectEqual> memo_;
+};
+
+/*!
  * \brief A simple visitor wrapper around ExprFunctor.
  *  Recursively visit the content.
  *

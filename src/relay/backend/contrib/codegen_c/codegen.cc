@@ -40,27 +40,10 @@ using namespace backend;
  * purpose. Only several binary options are covered. Users
  * may need to extend them to cover more operators.
  */
-class CodegenC : public relay::ExprFunctor<std::vector<Output>(const Expr&)>,
+class CodegenC : public relay::MemoizedExprFunctor<std::vector<Output>>,
                  public CodegenCBase {
  public:
   explicit CodegenC(const std::string& id) { this->ext_func_id_ = id; }
-
-  std::vector<Output> VisitExpr(const Expr& expr) final {
-    if (visited_.count(expr)) return visited_.at(expr);
-
-    std::vector<Output> output;
-    if (expr.as<ConstantNode>()) {
-      output = VisitExpr_(expr.as<ConstantNode>());
-    } else if (expr.as<VarNode>()) {
-      output = VisitExpr_(expr.as<VarNode>());
-    } else if (expr.as<CallNode>()) {
-      output = VisitExpr_(expr.as<CallNode>());
-    } else {
-      LOG(FATAL) << "C codegen doesn't support: " << expr->GetTypeKey();
-    }
-    visited_[expr] = output;
-    return output;
-  }
 
   std::vector<Output> VisitExpr_(const VarNode* node) final {
     ext_func_args_.push_back(GetRef<Var>(node));
@@ -213,8 +196,6 @@ class CodegenC : public relay::ExprFunctor<std::vector<Output>(const Expr&)>,
   std::vector<std::string> func_decl_;
   /*! \brief The declaration statements of buffers. */
   std::vector<std::string> buf_decl_;
-  /*! \brief The name and index pairs for output. */
-  std::unordered_map<Expr, std::vector<Output>, ObjectHash, ObjectEqual> visited_;
 };
 
 class CSourceCodegen : public CSourceModuleCodegenBase {

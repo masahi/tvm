@@ -112,7 +112,7 @@ Array<IndexExpr> GetShape(const Array<IndexExpr>& shape) {
 // The getter to get schedule from compile engine.
 // Get schedule from functor.
 class ScheduleGetter :
-      public ExprFunctor<Array<te::Tensor>(const Expr&)> {
+      public MemoizedExprFunctor<Array<te::Tensor>> {
  public:
   explicit ScheduleGetter(Target target)
       : target_(target), device_copy_op_(Op::Get("device_copy")) {}
@@ -177,17 +177,6 @@ class ScheduleGetter :
     }
     cache_node->schedule = std::move(schedule);
     return CachedFunc(cache_node);
-  }
-
-  Array<te::Tensor> VisitExpr(const Expr& expr) {
-    auto it = memo_.find(expr);
-    if (it != memo_.end()) {
-      return it->second;
-    } else {
-      Array<te::Tensor> res = ExprFunctor::VisitExpr(expr);
-      memo_[expr] = res;
-      return res;
-    }
   }
 
   Array<te::Tensor> VisitExpr_(const VarNode* op) final {
@@ -327,7 +316,6 @@ class ScheduleGetter :
   int master_op_pattern_{0};
   OpImplementation master_implementation_;
   std::ostringstream readable_name_stream_;
-  std::unordered_map<Expr, Array<te::Tensor>, ObjectHash, ObjectEqual> memo_;
   Array<te::Operation> scalars_;
   // Cache device copy op for equivalence checking to reduce registry lookup
   // overhead for each invocation of call node when retrieving schedules.
@@ -335,7 +323,9 @@ class ScheduleGetter :
 };
 
 // Creates shape function from functor.
-class MakeShapeFunc : public ExprFunctor<Array<te::Tensor>(const Expr&)> {
+class MakeShapeFunc : public MemoizedExprFunctor<Array<te::Tensor>> {
+  using BaseFunctor = MemoizedExprFunctor<Array<te::Tensor>>;
+
  public:
   MakeShapeFunc() {}
 
@@ -423,18 +413,13 @@ class MakeShapeFunc : public ExprFunctor<Array<te::Tensor>(const Expr&)> {
   }
 
   Array<te::Tensor> VisitExpr(const Expr& expr) {
-    auto it = memo_.find(expr);
-    if (it != memo_.end()) {
-      return it->second;
-    } else {
-      Array<te::Tensor> res = ExprFunctor::VisitExpr(expr);
-      if (expr.as<VarNode>() == nullptr) {
-        // Do not memoize vars because shape functions could use either the data
-        // or the shape of a var each time.
-        memo_[expr] = res;
-      }
-      return res;
+    if (expr.as<VarNode>()) {
+      // Do not memoize vars because shape functions could use either the data
+      // or the shape of a var each time.
+      return ExprFunctor::VisitExpr(expr);
     }
+    // For other case, do memoized visit
+    return BaseFunctor::VisitExpr(expr);
   }
 
   Array<te::Tensor> VisitExpr_(const VarNode* var_node) final {
@@ -577,8 +562,6 @@ class MakeShapeFunc : public ExprFunctor<Array<te::Tensor>(const Expr&)> {
   std::unordered_map<Expr, Array<te::Tensor>, ObjectHash, ObjectEqual> param_data_;
   /*! \brief Map from parameter to list of shape placeholder */
   std::unordered_map<Expr, Array<te::Tensor>, ObjectHash, ObjectEqual> param_shapes_;
-  /*! \brief Memoized visit result */
-  std::unordered_map<Expr, Array<te::Tensor>, ObjectHash, ObjectEqual> memo_;
   /*! \brief Stack of data dependencies for shape function */
   std::vector<bool> data_dependants_;
   /*! \brief Scalars used in the shape function */
