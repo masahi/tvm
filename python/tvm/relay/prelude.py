@@ -124,6 +124,38 @@ class StaticTensorArrayOps(object):
                                                      [],
                                                      [tensor_nil_case, tensor_case])
 
+    def define_tensor_concatenate_last(self):
+        """Defines a function to concatenate two tensor_t on axis 0.
+        tensor_concatenate(t) : tensor_t -> tensor_t -> tensor_t
+        """
+         # We don't register concatenate for scalar tensor.
+        ndim = len(self.shape)
+        if ndim == 0:
+            return
+
+        concat_name = self.get_name("tensor_concatenate_last")
+        concat_var = self._create_global_var(concat_name)
+        setattr(self.prelude, concat_name, concat_var)
+        output_shape = list(self.shape[:-1]) + [Any(),]
+        tensor_type_var, tensor_constructor = \
+            self._get_adt_by_shape(output_shape)
+
+        origin_tensor_constructor = self.get_var('tensor_constructor')
+        origin_tensor_type_var = self.get_var('tensor_t')
+        x = Var("x", origin_tensor_type_var())
+        y = Var("y", origin_tensor_type_var())
+        t1 = Var("t1")
+        t2 = Var("t2")
+
+        case = Clause(PatternConstructor(origin_tensor_constructor, [PatternVar(t1)]),
+                      Match(y,
+                            [Clause(PatternConstructor(origin_tensor_constructor, [PatternVar(t2)]),
+                                    tensor_constructor(op.concatenate([t1, t2], axis=-1)))],
+                            False))
+
+        self.prelude.mod[concat_var] = \
+            Function([x, y], Match(x, [case], False), tensor_type_var(), [])
+
     def define_tensor_array(self):
         """Defines a function to create a tensor array with size n.
         tensor_array(n) : Tensor[(), int32] -> list[tensor_t]
@@ -571,11 +603,53 @@ class StaticTensorArrayOps(object):
             Function([t], Match(t, [case], False),
                      TensorType(data_shape, self.dtype), [])
 
+    def define_tensor_array_concat_last(self):
+        """Defines a function to return the values in the tensor array as concatenated tensor_t.
+        tensor_array_concat(ta) : list[tensor_t] -> tensor_t
+        """
+        # We don't register concat for scalar tensor array.
+        ndim = len(self.shape)
+        if ndim == 0:
+            return
+
+        concat_name = self.get_name("tensor_array_concat_last")
+        concat_var = self._create_global_var(concat_name)
+        setattr(self.prelude, concat_name, concat_var)
+
+        output_shape = list(self.shape[:-1]) + [Any(),]
+        tensor_type_var, _ = self._get_adt_by_shape(output_shape)
+
+        # Register tensor concatenate and get tensor_nil var for output shape
+        origin_shape = self.shape
+        self.shape = output_shape
+        # print(self.prelude.mod)
+        # print("define_tensor_array_concat_last origin_shape:", self.shape)
+        # print("define_tensor_array_concat_last self.shape:", self.shape)
+        self.define_tensor_concatenate_last()
+        tensor_concat_var = self.get_var('tensor_concatenate_last')
+        tensor_nil_var = self.get_var('tensor_nil')
+        self.shape = origin_shape
+
+        tensor_array = Var("tensor_array", self.prelude.l(tensor_type_var()))
+        hd = Var("hd")
+        tl = Var("tl")
+        nil_case = Clause(PatternConstructor(self.prelude.nil), tensor_nil_var())
+        cons_case = Clause(PatternConstructor(self.prelude.cons, [PatternVar(hd), PatternVar(tl)]),
+                           Match(tl, [
+                               Clause(PatternConstructor(self.prelude.nil), hd),
+                               Clause(PatternWildcard(),
+                                      tensor_concat_var(hd, concat_var(tl)))
+                           ], False))
+        self.prelude.mod[concat_var] = \
+            Function([tensor_array],
+                     Match(tensor_array, [nil_case, cons_case], False), tensor_type_var(), [])
+
     def register(self):
         """Register all tensor array ops in Prelude"""
         self.define_tensor_adt()
         self.define_tensor_take()
         self.define_tensor_concatenate()
+        self.define_tensor_concatenate_last()
         self.define_tensor_expand_dims()
         self.define_tensor_array()
         self.define_tensor_array_read()
@@ -584,6 +658,7 @@ class StaticTensorArrayOps(object):
         self.define_tensor_array_scatter()
         self.define_tensor_array_split()
         self.define_tensor_array_concat()
+        self.define_tensor_array_concat_last()
         self.define_tensor_array_stack()
         self.define_tensor_array_gather()
 
