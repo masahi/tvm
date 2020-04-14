@@ -181,13 +181,32 @@ def _unsqueeze():
 
 def _concatenate(prelude):
     def tensor_array_concat(lst, axis):
-        assert axis == 0, "Tensor array concat supported only for axis 0"
-        tensor_array, shape = _convert_to_tensor_array(lst, prelude)
-        concat_shape = (Any(),) + shape[1:]
+        # assert axis == 0, "Tensor array concat supported only for axis 0"
+        # tensor_array, shape = _convert_to_tensor_array(lst, prelude)
+        # concat_shape = (Any(),) + shape[1:]
+        # static_tensor_array_ops = StaticTensorArrayOps(prelude, "float32", shape)
+        # static_tensor_array_ops.define_tensor_get_data(concat_shape)
+
+        # concat = prelude.get_var_static('tensor_array_concat', "float32", shape)
+        # concatenated = concat(tensor_array)
+        # get_tensor = prelude.get_var_static('tensor_get_data', "float32", shape)
+        # return get_tensor(concatenated)
+        assert axis == -1, "Tensor array concat supported only for axis 0"
+        checked_type = _infer_type_with_prelude(prelude.hd(lst), prelude)
+        shape = tuple(checked_type.shape)
+        concat_shape = shape[:-1] + (Any(),)
+        static_tensor_array_ops = StaticTensorArrayOps(prelude, "float32", concat_shape)
+        static_tensor_array_ops.register()
+
+
+        tensor_array = _map_tensor_array_constructor(lst, prelude, concat_shape)
+        # tensor_array, shape = _convert_to_tensor_array(lst, prelude)
+
+        print("concat_shape:", concat_shape)
         static_tensor_array_ops = StaticTensorArrayOps(prelude, "float32", shape)
         static_tensor_array_ops.define_tensor_get_data(concat_shape)
 
-        concat = prelude.get_var_static('tensor_array_concat', "float32", shape)
+        concat = prelude.get_var_static('tensor_array_concat_last', "float32", concat_shape)
         concatenated = concat(tensor_array)
         get_tensor = prelude.get_var_static('tensor_get_data', "float32", shape)
         return get_tensor(concatenated)
