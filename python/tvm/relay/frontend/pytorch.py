@@ -147,7 +147,6 @@ def _min_max_common(name_elemwise, name_reduce):
         else:
             data0, data1 = _pytorch_promote_types(inputs[:2], input_types[:2])
             return get_relay_op(name_elemwise)(data0, data1)
-
     return _impl
 
 
