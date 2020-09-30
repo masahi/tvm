@@ -104,16 +104,24 @@ def get_weight_quant_params(script_module):
     param_name = "_packed_params"
     quant_params = {}
 
-    for name, m in script_module.named_modules():
-        if not isinstance(m, torch.jit.RecursiveScriptModule):
-            continue
+    def filter_func(named_module):
+        m = named_module[1]
+        return isinstance(m, torch.jit.RecursiveScriptModule) and (
+            ("Conv" in m.original_name) or (m.original_name == "LinearPackedParams")
+        )
 
+    for name, m in filter(filter_func, script_module.named_modules()):
         key = name + "." + param_name
         state_dict = m.state_dict()
 
-        if len(state_dict) == 0:
+        if len(state_dict) == 0 and not hasattr(m, param_name):
             # for v1.6 and above
-            assert hasattr(m, param_name)
+            # This case seems to happen if a model is serialized
+            # and loaded back
+            # This module can be safely ignored
+            continue
+        elif len(state_dict) == 0 and hasattr(m, param_name):
+            # for v1.6 and above
             packed_params = m._packed_params
         else:
             assert len(state_dict) == 1
