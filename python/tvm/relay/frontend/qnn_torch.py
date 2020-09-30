@@ -26,6 +26,14 @@ from tvm.relay import expr as _expr
 from tvm.relay import op as _op
 from tvm.relay.frontend.common import infer_shape
 
+from packaging import version
+
+
+def _is_newer_than_1_6():
+    import torch
+
+    return version.parse(torch.__version__) > version.parse("1.5.0")
+
 
 class QNNParam:
     """ A placeholder for weight quantization parameters """
@@ -46,27 +54,43 @@ class QNNParam:
         self.zero_point = _expr.const(zero_point, dtype="int32")
 
 
+class ConvPackedParam(QNNParam):
+    def __init__(
+        self, weight_np, bias, scale, zero_point, param_name, stride, padding, dilation, groups
+    ):
+        super().__init__(weight_np, bias, scale, zero_point, param_name)
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
+
+
 def _unpack_quant_params(param_name, packed_params, unpack_func):
-    # Torch stores quantized params in a custom packed format,
-    # need to unpack and retrieve them as numpy arrays
     qweight, bias = unpack_func(packed_params)
     weight_np = qweight.dequantize().numpy()
 
     import torch
 
     if qweight.qscheme() == torch.per_tensor_affine:
-        param = QNNParam(
-            weight_np, bias, qweight.q_scale(), int(qweight.q_zero_point()), param_name
-        )
+        scale = qweight.q_scale()
+        zero_point = int(qweight.q_zero_point())
     else:
-        scales = qweight.q_per_channel_scales().numpy()
+        scale = qweight.q_per_channel_scales().numpy()
         zero_points = qweight.q_per_channel_zero_points().numpy()
         # This is an assumption posed by QNN
         msg = "The values of zero points should be all zero for per channel"
         assert np.all(zero_points == 0), msg
-        param = QNNParam(weight_np, bias, scales, 0, param_name)
+        zero_point = 0
 
-    return param
+    if True:  # isinstance(packed_params, torch.classes.quantized.Conv2dPackedParamsBase):
+        stride = packed_params.stride()
+        padding = packed_params.padding()
+        dilation = packed_params.dilation()
+        groups = packed_params.groups()
+        return ConvPackedParam(
+            weight_np, bias, scale, zero_point, param_name, stride, padding, dilation, groups
+        )
+    return QNNParam(weight_np, bias, scale, zero_point, param_name)
 
 
 def get_weight_quant_params(script_module):
@@ -118,8 +142,12 @@ def add_quant_params_to_outputs(outputs, packed_param_map, quant_params):
         qweight = relay.qnn.op.quantize(
             qparam.weight_var, qparam.scale, qparam.zero_point, out_dtype="int8", axis=0
         )
-        param_tup = (qweight, qparam.scale, qparam.zero_point, qparam.bias_var)
-        outputs[node_name] = param_tup
+        params = [qweight, qparam.scale, qparam.zero_point, qparam.bias_var]
+
+        if isinstance(quant_params[packed_param_name], ConvPackedParam):
+            params += [qparam.stride, qparam.padding, qparam.dilation, qparam.groups]
+
+        outputs[node_name] = params
 
 
 def _get_quant_param_for_input(input_value):
@@ -463,23 +491,40 @@ def _quantized_conv2d(with_relu=False):
         # inputs[7]: output_zero_point
         # inputs[8]: input_scale (added manually by frontend)
         # inputs[9]: input_zero_point (added manually by frontend)
-        weight = inputs[1][0]
-        weight_scale = inputs[1][1]
-        weight_zero_point = inputs[1][2]
+        conv_params = inputs[1]
+        weight = conv_params[0]
+        weight_scale = conv_params[1]
+        weight_zero_point = conv_params[2]
+        bias = conv_params[3]
 
-        output_scale = _expr.const(inputs[2])
-        output_zero_point = _expr.const(inputs[3])
+        if len(conv_params) > 4:
+            # Torch 1.6 or newer case
+            strides = conv_params[4]
+            padding = conv_params[5]
+            dilation = conv_params[6]
+            groups = conv_params[7]
 
-        # assert len(inputs) == 10, "Input quant params not found in op inputs"
-        # These are manually added by add_input_quant_params_to_op_inputs above
-        # In torch, they are retrieved from QTensor data structure at runtime
-        input_scale = _expr.const(inputs[4])
-        input_zero_point = _expr.const(inputs[5])
+            output_scale = _expr.const(inputs[2])
+            output_zero_point = _expr.const(inputs[3])
 
-        strides = [1, 1]
-        padding = [0, 0]
-        dilation = [1, 1]
-        groups = 1
+            assert len(inputs) == 6, "Input quant params not found in op inputs"
+
+            # These are manually added by add_input_quant_params_to_op_inputs above
+            # In torch, they are retrieved from QTensor data structure at runt
+            input_scale = _expr.const(inputs[4])
+            input_zero_point = _expr.const(inputs[5])
+        else:
+            strides = inputs[2]
+            padding = inputs[3]
+            dilation = inputs[4]
+            groups = inputs[5]
+            output_scale = _expr.const(inputs[6])
+            output_zero_point = _expr.const(inputs[7])
+
+            assert len(inputs) == 10, "Input quant params not found in op inputs"
+
+            input_scale = _expr.const(inputs[8])
+            input_zero_point = _expr.const(inputs[9])
 
         weight_shape = infer_shape(weight)
         kernel_size = (weight_shape[2], weight_shape[3])
@@ -511,16 +556,9 @@ def _quantized_conv2d(with_relu=False):
             groups=groups,
             channels=out_channels,
         )
-        bias_var = inputs[1][3]
 
         return _do_bias_and_requantize(
-            conv_out,
-            bias_var,
-            input_scale,
-            weight_scale,
-            output_scale,
-            output_zero_point,
-            with_relu,
+            conv_out, bias, input_scale, weight_scale, output_scale, output_zero_point, with_relu,
         )
 
     return _impl
