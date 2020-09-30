@@ -29,7 +29,7 @@ from tvm.relay.frontend.common import infer_shape
 from packaging import version
 
 
-def _is_newer_than_1_6():
+def _is_newer_than_1_5():
     import torch
 
     return version.parse(torch.__version__) > version.parse("1.5.0")
@@ -82,7 +82,9 @@ def _unpack_quant_params(param_name, packed_params, unpack_func):
         assert np.all(zero_points == 0), msg
         zero_point = 0
 
-    if True:  # isinstance(packed_params, torch.classes.quantized.Conv2dPackedParamsBase):
+    if hasattr(packed_params, "padding"):
+        # The following doesn't work
+        # isinstance(packed_params, torch.classes.quantized.Conv2dPackedParamsBase)
         stride = packed_params.stride()
         padding = packed_params.padding()
         dilation = packed_params.dilation()
@@ -162,10 +164,17 @@ def _get_quant_param_for_input(input_value):
     # Indices for output scale and zp
     # For example, in quantized::conv2d(%input, %1, %2, %3, %4, %5, %6, %7),
     # 6th and 7th arg are output scale and zp respectively.
+
+    # PyTorch 1.6 changed qconv API
+    if _is_newer_than_1_5():
+        qconv_indices = (2, 3)
+    else:
+        qconv_indices = (6, 7)
+
     output_quant_param_indices = {
         "aten::quantize_per_tensor": (1, 2),
-        "quantized::conv2d": (2, 3),
-        "quantized::conv2d_relu": (6, 7),
+        "quantized::conv2d": qconv_indices,
+        "quantized::conv2d_relu": qconv_indices,
         "quantized::linear": (2, 3),
         "quantized::linear_relu": (2, 3),
         "quantized::add_relu": (2, 3),
