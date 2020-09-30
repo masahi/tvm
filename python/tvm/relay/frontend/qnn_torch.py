@@ -121,13 +121,13 @@ def get_weight_quant_params(script_module):
 
         if "Conv" in m.original_name and len(state_dict) == 0:
             qweight, bias = torch.ops.quantized.conv2d_unpack(packed_params)
-            quant_params[key] = make_conv_packed_param(param_name, qweight, bias, packed_params)
+            quant_params[key] = make_conv_packed_param(key, qweight, bias, packed_params)
         elif "Conv" in m.original_name:
             qweight, bias = torch.ops.quantized.conv2d_unpack(packed_params)
-            quant_params[key] = make_qnn_param(param_name, qweight, bias)
+            quant_params[key] = make_qnn_param(key, qweight, bias)
         elif m.original_name == "LinearPackedParams":
             qweight, bias = torch.ops.quantized.linear_unpack(packed_params)
-            quant_params[key] = make_qnn_param(param_name, qweight, bias)
+            quant_params[key] = make_qnn_param(key, qweight, bias)
 
     return quant_params
 
