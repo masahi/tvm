@@ -65,71 +65,69 @@ class ConvPackedParam(QNNParam):
         self.groups = groups
 
 
-def _unpack_quant_params(param_name, packed_params, unpack_func):
-    qweight, bias = unpack_func(packed_params)
-    weight_np = qweight.dequantize().numpy()
-
+def get_quant_params(qweight):
     import torch
 
-    if qweight.qscheme() == torch.per_tensor_affine:
-        scale = qweight.q_scale()
-        zero_point = int(qweight.q_zero_point())
-    else:
-        scale = qweight.q_per_channel_scales().numpy()
-        zero_points = qweight.q_per_channel_zero_points().numpy()
-        # This is an assumption posed by QNN
-        msg = "The values of zero points should be all zero for per channel"
-        assert np.all(zero_points == 0), msg
-        zero_point = 0
+    weight_np = qweight.dequantize().numpy()
 
-    if hasattr(packed_params, "padding"):
-        # The following doesn't work
-        # isinstance(packed_params, torch.classes.quantized.Conv2dPackedParamsBase)
-        stride = packed_params.stride()
-        padding = packed_params.padding()
-        dilation = packed_params.dilation()
-        groups = packed_params.groups()
-        return ConvPackedParam(
-            weight_np, bias, scale, zero_point, param_name, stride, padding, dilation, groups
-        )
+    if qweight.qscheme() == torch.per_tensor_affine:
+        return weight_np, qweight.q_scale(), int(qweight.q_zero_point())
+
+    scales = qweight.q_per_channel_scales().numpy()
+    zero_points = qweight.q_per_channel_zero_points().numpy()
+    # This is an assumption posed by QNN
+    msg = "The values of zero points should be all zero for per channel"
+    assert np.all(zero_points == 0), msg
+    return weight_np, scales, 0
+
+
+def make_qnn_param(param_name, qweight, bias):
+    weight_np, scale, zero_point = get_quant_params(qweight)
     return QNNParam(weight_np, bias, scale, zero_point, param_name)
+
+
+def make_conv_packed_param(param_name, qweight, bias, packed_params):
+    weight_np, scale, zero_point = get_quant_params(qweight)
+    stride = packed_params.stride()
+    padding = packed_params.padding()
+    dilation = packed_params.dilation()
+    groups = packed_params.groups()
+    return ConvPackedParam(
+        weight_np, bias, scale, zero_point, param_name, stride, padding, dilation, groups
+    )
 
 
 def get_weight_quant_params(script_module):
     """ Retrive and unpack weight parameters from quantized modules """
-    conv_packed_params = []
-    linear_packed_params = []
-
     import torch
 
-    # conv and linear requires different unpacking function
-    # extract all conv and linear parameters separately to distinguish them
     param_name = "_packed_params"
-    for name, m in script_module.named_modules():
-        if isinstance(m, torch.jit.RecursiveScriptModule):
-            if "Conv" in m.original_name:
-                state_dict = m.state_dict()
-                if len(state_dict) == 0:
-                    # for v1.6 and above
-                    assert hasattr(m, "_packed_params")
-                    state_dict[param_name] = m._packed_params
-                conv_packed_params.append((name, state_dict))
-            elif m.original_name == "LinearPackedParams":
-                linear_packed_params.append((name, m.state_dict()))
-
-    pairs = [
-        (torch.ops.quantized.conv2d_unpack, conv_packed_params),
-        (torch.ops.quantized.linear_unpack, linear_packed_params),
-    ]
-
     quant_params = {}
-    for unpack_func, params in pairs:
-        for name, state_dict in params:
+
+    for name, m in script_module.named_modules():
+        if not isinstance(m, torch.jit.RecursiveScriptModule):
+            continue
+
+        key = name + "." + param_name
+        state_dict = m.state_dict()
+
+        if len(state_dict) == 0:
+            # for v1.6 and above
+            assert hasattr(m, param_name)
+            packed_params = m._packed_params
+        else:
             assert len(state_dict) == 1
-            assert param_name in state_dict
-            key = name + "." + param_name
-            packed_param = state_dict[param_name]
-            quant_params[key] = _unpack_quant_params(key, packed_param, unpack_func)
+            packed_params = list(state_dict.values())[0]
+
+        if "Conv" in m.original_name and len(state_dict) == 0:
+            qweight, bias = torch.ops.quantized.conv2d_unpack(packed_params)
+            quant_params[key] = make_conv_packed_param(param_name, qweight, bias, packed_params)
+        elif "Conv" in m.original_name:
+            qweight, bias = torch.ops.quantized.conv2d_unpack(packed_params)
+            quant_params[key] = make_qnn_param(param_name, qweight, bias)
+        elif m.original_name == "LinearPackedParams":
+            qweight, bias = torch.ops.quantized.linear_unpack(packed_params)
+            quant_params[key] = make_qnn_param(param_name, qweight, bias)
 
     return quant_params
 
