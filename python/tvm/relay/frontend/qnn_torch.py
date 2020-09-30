@@ -78,10 +78,16 @@ def get_weight_quant_params(script_module):
 
     # conv and linear requires different unpacking function
     # extract all conv and linear parameters separately to distinguish them
+    param_name = "_packed_params"
     for name, m in script_module.named_modules():
         if isinstance(m, torch.jit.RecursiveScriptModule):
             if "Conv" in m.original_name:
-                conv_packed_params.append((name, m.state_dict()))
+                state_dict = m.state_dict()
+                if len(state_dict) == 0:
+                    # for v1.6 and above
+                    assert hasattr(m, "_packed_params")
+                    state_dict[param_name] = m._packed_params
+                conv_packed_params.append((name, state_dict))
             elif m.original_name == "LinearPackedParams":
                 linear_packed_params.append((name, m.state_dict()))
 
@@ -91,7 +97,6 @@ def get_weight_quant_params(script_module):
     ]
 
     quant_params = {}
-    param_name = "_packed_params"
     for unpack_func, params in pairs:
         for name, state_dict in params:
             assert len(state_dict) == 1
@@ -131,7 +136,7 @@ def _get_quant_param_for_input(input_value):
     # 6th and 7th arg are output scale and zp respectively.
     output_quant_param_indices = {
         "aten::quantize_per_tensor": (1, 2),
-        "quantized::conv2d": (6, 7),
+        "quantized::conv2d": (2, 3),
         "quantized::conv2d_relu": (6, 7),
         "quantized::linear": (2, 3),
         "quantized::linear_relu": (2, 3),
@@ -462,20 +467,19 @@ def _quantized_conv2d(with_relu=False):
         weight_scale = inputs[1][1]
         weight_zero_point = inputs[1][2]
 
-        output_scale = _expr.const(inputs[6])
-        output_zero_point = _expr.const(inputs[7])
+        output_scale = _expr.const(inputs[2])
+        output_zero_point = _expr.const(inputs[3])
 
-        assert len(inputs) == 10, "Input quant params not found in op inputs"
+        # assert len(inputs) == 10, "Input quant params not found in op inputs"
         # These are manually added by add_input_quant_params_to_op_inputs above
         # In torch, they are retrieved from QTensor data structure at runtime
-        input_scale = _expr.const(inputs[8])
-        input_zero_point = _expr.const(inputs[9])
+        input_scale = _expr.const(inputs[4])
+        input_zero_point = _expr.const(inputs[5])
 
-        strides, padding, dilation = inputs[2], inputs[3], inputs[4]
-        strides = inputs[2]
-        padding = inputs[3]
-        dilation = inputs[4]
-        groups = inputs[5]
+        strides = [1, 1]
+        padding = [0, 0]
+        dilation = [1, 1]
+        groups = 1
 
         weight_shape = infer_shape(weight)
         kernel_size = (weight_shape[2], weight_shape[3])
