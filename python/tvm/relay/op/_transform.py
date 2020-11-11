@@ -859,3 +859,12 @@ def where_shape_func(attrs, inputs, _):
     out_shape = _broadcast_shape_tensors(bcast_shape, cond_shape)
 
     return [out_shape]
+
+
+@_reg.register_shape_func("gather", False)
+def gather_shape_func(attrs, inputs, _):
+    """
+    Shape func for gather.
+    """
+    index_shape = inputs[1]
+    return [index_shape]
