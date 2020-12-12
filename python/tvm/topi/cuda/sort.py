@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-# pylint: disable=invalid-name, no-member, too-many-locals, too-many-arguments, too-many-statements, singleton-comparison, unused-argument
+# pylint: disable=invalid-name, no-member, too-many-locals, too-many-arguments, too-many-statements, singleton-comparison, unused-argument, no-else-return
 """Sort related operators """
 import tvm
 from tvm import te
@@ -161,11 +161,13 @@ def sort_ir(
 
             def compare(a, b):
                 if is_ascend:
-                    return a <= b
+                    out = a <= b
                 else:
-                    return b <= a
+                    out = b <= a
+                return out
 
             def BottomUpMerge(source, dest, source_idx, dest_idx, start, middle, end, even):
+                # pylint: disable=arguments-out-of-order
                 i[0] = start
                 j[0] = middle
                 base_idx = by * shape[axis] * axis_mul_after + bz
@@ -205,7 +207,7 @@ def sort_ir(
 
             def MergeSort(source, dest, source_idx, dest_idx, size, width, slices, even):
                 start[0] = width * tid * slices
-                with ib.for_range(0, slices) as s:
+                with ib.for_range(0, slices):
                     with ib.if_scope(start[0] < size):
                         middle[0] = tvm.te.min(start[0] + tvm.tir.indexdiv(width, 2), size)
                         end[0] = tvm.te.min(start[0] + width, size)
