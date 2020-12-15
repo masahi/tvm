@@ -96,6 +96,79 @@ def _sort_inplace(
     lim = tvm.tir.generic.cast(
         tvm.tir.ceil(tvm.tir.log2(tvm.tir.generic.cast(size, "float64"))), "int64"
     )
+
+    def compare(a, b):
+        """
+        Compare a and b in proper ascending or descending order
+        """
+        if is_ascend:
+            out = a <= b
+        else:
+            out = b <= a
+        return out
+
+    def bottom_up_merge(source, dest, source_idx, dest_idx, start, middle, end, even):
+        """
+        Merge the two sections of the array assigned to this thread
+        """
+        # pylint: disable=arguments-out-of-order
+        # initialize iterators
+        i[0] = start
+        j[0] = middle
+        # set up indexes
+        base_idx = by * size * axis_mul_after + bz
+        # iterate over the output loop
+        with ib.for_range(0, end - start) as k:
+            i_idx = base_idx + i[0] * axis_mul_after
+            j_idx = base_idx + j[0] * axis_mul_after
+            k_idx = base_idx + (k + start) * axis_mul_after
+
+            def swap_values(source, dest, source_idx, dest_idx):
+                def assign_i():
+                    """assign i value to current output"""
+                    dest[k_idx] = source[i_idx]
+                    if values is not None:
+                        dest_idx[k_idx] = source_idx[i_idx]
+                    i[0] += 1
+
+                def assign_j():
+                    """assign j value to current output"""
+                    dest[k_idx] = source[j_idx]
+                    if values is not None:
+                        dest_idx[k_idx] = source_idx[j_idx]
+                    j[0] += 1
+
+                ## if both of the iterators are in range
+                with ib.if_scope(tvm.tir.all(i[0] < middle, j[0] < end)):
+                    # compare them and insert whichever is next into the output
+                    with ib.if_scope(compare(source[i_idx], source[j_idx])):
+                        assign_i()
+                    with ib.else_scope():
+                        assign_j()
+                # otherwise, simply copy the remainder of the valid iterator to the output
+                with ib.else_scope():
+                    with ib.if_scope(i[0] < middle):
+                        assign_i()
+                    with ib.else_scope():
+                        assign_j()
+
+            # Switch which input is the source and which is the destination each iteration
+            with ib.if_scope(even):
+                swap_values(source, dest, source_idx, dest_idx)
+            with ib.else_scope():
+                swap_values(dest, source, dest_idx, source_idx)
+
+    def merge_sort(source, dest, source_idx, dest_idx, size, width, even):
+        # calculate the start, mid, and end points of this section
+        start[0] = width * tid
+        with ib.if_scope(start[0] < size):
+            middle[0] = tvm.te.min(start[0] + tvm.tir.indexdiv(width, 2), size)
+            end[0] = tvm.te.min(start[0] + width, size)
+            ## merge the start->middle and middle->end arrays
+            bottom_up_merge(
+                source, dest, source_idx, dest_idx, start[0], middle[0], end[0], even
+            )
+
     with ib.for_range(0, lim, dtype="int64") as l2_width:
         width = 2 << l2_width
         # Define and launch the cuda kernel
@@ -121,80 +194,8 @@ def _sort_inplace(
             ib.scope_attr(by, "thread_extent", nthread_by)
             ib.scope_attr(bz, "thread_extent", nthread_bz)
 
-            def compare(a, b):
-                """
-                Compare a and b in proper ascending or descending order
-                """
-                if is_ascend:
-                    out = a <= b
-                else:
-                    out = b <= a
-                return out
-
-            def BottomUpMerge(source, dest, source_idx, dest_idx, start, middle, end, even):
-                """
-                Merge the two sections of the array assigned to this thread
-                """
-                # pylint: disable=arguments-out-of-order
-                # initialize iterators
-                i[0] = start
-                j[0] = middle
-                # set up indexes
-                base_idx = by * size * axis_mul_after + bz
-                # iterate over the output loop
-                with ib.for_range(0, end - start) as k:
-                    i_idx = base_idx + i[0] * axis_mul_after
-                    j_idx = base_idx + j[0] * axis_mul_after
-                    k_idx = base_idx + (k + start) * axis_mul_after
-
-                    def swap_values(source, dest, source_idx, dest_idx):
-                        def assign_i():
-                            """assign i value to current output"""
-                            dest[k_idx] = source[i_idx]
-                            if values is not None:
-                                dest_idx[k_idx] = source_idx[i_idx]
-                            i[0] += 1
-
-                        def assign_j():
-                            """assign j value to current output"""
-                            dest[k_idx] = source[j_idx]
-                            if values is not None:
-                                dest_idx[k_idx] = source_idx[j_idx]
-                            j[0] += 1
-
-                        ## if both of the iterators are in range
-                        with ib.if_scope(tvm.tir.all(i[0] < middle, j[0] < end)):
-                            # compare them and insert whichever is next into the output
-                            with ib.if_scope(compare(source[i_idx], source[j_idx])):
-                                assign_i()
-                            with ib.else_scope():
-                                assign_j()
-                        # otherwise, simply copy the remainder of the valid iterator to the output
-                        with ib.else_scope():
-                            with ib.if_scope(i[0] < middle):
-                                assign_i()
-                            with ib.else_scope():
-                                assign_j()
-
-                    # Switch which input is the source and which is the destination each iteration
-                    with ib.if_scope(even):
-                        swap_values(source, dest, source_idx, dest_idx)
-                    with ib.else_scope():
-                        swap_values(dest, source, dest_idx, source_idx)
-
-            def MergeSort(source, dest, source_idx, dest_idx, size, width, even):
-                # calculate the start, mid, and end points of this section
-                start[0] = width * tid
-                with ib.if_scope(start[0] < size):
-                    middle[0] = tvm.te.min(start[0] + tvm.tir.indexdiv(width, 2), size)
-                    end[0] = tvm.te.min(start[0] + width, size)
-                    ## merge the start->middle and middle->end arrays
-                    BottomUpMerge(
-                        source, dest, source_idx, dest_idx, start[0], middle[0], end[0], even
-                    )
-
             # Call the kernel
-            MergeSort(
+            merge_sort(
                 keys,
                 keys_swap,
                 values,
@@ -305,6 +306,95 @@ def sort_ir(
             keys_out[idx] = keys_in[idx]
             if values_out is not None:
                 values_out[idx] = tvm.tir.generic.cast(tid, values_out.dtype)
+
+    return _sort_inplace(
+        ib,
+        shape[axis],
+        axis_mul_before,
+        axis_mul_after,
+        is_ascend,
+        keys_out,
+        keys_out_swap,
+        values=values_out,
+        values_swap=values_out_swap,
+    )
+
+
+def sort_by_key_ir(
+    keys_in, values_in, keys_out, values_out, keys_out_swap, values_out_swap, axis, is_ascend
+):
+    """Low level IR to do nms sorting on the GPU, same usage as tvm.contrib.sort.argsort on the CPU.
+
+    Parameters
+    ----------
+    keys_in: Buffer
+        Buffer of input keys_in. Keys_in will be sorted in place.
+
+    keys_out : Buffer
+        Output buffer of values of sorted tensor with same shape as keys_in.
+
+    keys_out_swap : Buffer
+        Output buffer of values with same shape as keys_in to use as swap.
+
+    axis : Int
+        Axis long which to sort the input tensor.
+
+    is_ascend : Boolean
+        Whether to sort in ascending or descending order.
+
+    indicess_out : Buffer
+        Output buffer of indices of sorted tensor with same shape as keys_in.
+
+    values_out_swap : Buffer
+        Output buffer of indices with same shape as keys_in to use as swap.
+
+    Returns
+    -------
+    stmt : Stmt
+        The result IR statement.
+    """
+    axis_mul_before = 1
+    axis_mul_after = 1
+    shape = keys_in.shape
+    if axis < 0:
+        axis = len(shape) + axis
+    for i, value in enumerate(shape, 0):
+        if i < axis:
+            axis_mul_before *= value
+        elif i > axis:
+            axis_mul_after *= value
+
+    ib = tvm.tir.ir_builder.create()
+
+    keys_in = ib.buffer_ptr(keys_in)
+    keys_out = ib.buffer_ptr(keys_out)
+    keys_out_swap = ib.buffer_ptr(keys_out_swap)
+    values_out = ib.buffer_ptr(values_out)
+    values_out_swap = ib.buffer_ptr(values_out_swap)
+
+    # Set up threading
+    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+    nthread_tx = max_threads
+    nthread_bx = ceil_div(shape[axis], max_threads)
+    nthread_by = axis_mul_before
+    nthread_bz = axis_mul_after
+
+    # Copy the keys_in to initial output
+    with ib.new_scope():
+        tx = te.thread_axis("threadIdx.x")
+        bx = te.thread_axis("blockIdx.x")
+        ib.scope_attr(tx, "thread_extent", nthread_tx)
+        ib.scope_attr(bx, "thread_extent", nthread_bx)
+        tid = bx * nthread_tx + tx
+
+        by = te.thread_axis("blockIdx.y")
+        bz = te.thread_axis("blockIdx.z")
+        ib.scope_attr(by, "thread_extent", nthread_by)
+        ib.scope_attr(bz, "thread_extent", nthread_bz)
+        idx = (by * shape[axis] + tid) * axis_mul_after + bz
+        with ib.if_scope(tid < shape[axis]):
+            keys_out[idx] = keys_in[idx]
+            values_out[idx] = values_in[idx]
 
     return _sort_inplace(
         ib,
