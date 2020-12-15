@@ -36,15 +36,15 @@ def test_argsort():
             ref_res = np.argsort(-x_data, axis=axis, kind="stable")
 
         for target, ctx in tvm.testing.enabled_targets():
-            if target == "nvptx":
-                continue
             for kind in ["graph", "debug"]:
-                intrp = relay.create_executor(kind, ctx=ctx, target=target)
-                op_res = intrp.evaluate(func)(x_data)
+                mod = tvm.IRModule.from_expr(func)
+                intrp = relay.create_executor(kind, mod=mod, ctx=ctx, target=target)
+                op_res = intrp.evaluate()(x_data)
                 tvm.testing.assert_allclose(op_res.asnumpy(), ref_res.astype(dtype), rtol=1e-5)
 
     for dtype in ["int32", "int64", "float32", "float64"]:
         verify_argsort((2, 3, 4), axis=0, is_ascend=False, dtype=dtype)
+        verify_argsort((1, 122640), axis=1, is_ascend=False, dtype=dtype)
         verify_argsort((1, 4, 6), axis=1, is_ascend=True, dtype=dtype)
         verify_argsort((3, 5, 6), axis=-1, is_ascend=False, dtype=dtype)
         verify_argsort((3, 2000, 6), axis=1, is_ascend=False, dtype=dtype)
