@@ -35,7 +35,8 @@ _topk_implement = {
 
 
 def verify_argsort(axis, is_ascend):
-    dshape = (20, 100)
+    dshape = (1, 4096 * 8 + 1)
+    axis = 1
     data_dtype = "float32"
     data = te.placeholder(dshape, name="data", dtype=data_dtype)
 
@@ -67,10 +68,14 @@ def verify_argsort(axis, is_ascend):
         tvm_data = tvm.nd.array(np_data, ctx)
         tvm_out = tvm.nd.array(np.zeros(dshape, dtype=data_dtype), ctx)
         f = tvm.build(s, [data, out], device)
+        # print(f.imported_modules[0].get_source())
+        # print(f.get_source())
+
         f(tvm_data, tvm_out)
         tvm.testing.assert_allclose(tvm_out.asnumpy(), np_indices.astype(data_dtype), rtol=1e0)
 
-    for device in ["llvm", "cuda", "opencl"]:
+    # for device in ["cuda"]:
+    for device in ["opencl"]:
         check_device(device)
 
 
@@ -129,9 +134,9 @@ def verify_topk(k, axis, ret_type, is_ascend, dtype):
 @tvm.testing.uses_gpu
 def test_argsort():
     np.random.seed(0)
-    for axis in [0, -1, 1]:
+    for axis in [0]:
         verify_argsort(axis, True)
-        verify_argsort(axis, False)
+        # verify_argsort(axis, False)
 
 
 @tvm.testing.uses_gpu
@@ -146,4 +151,4 @@ def test_topk():
 
 if __name__ == "__main__":
     test_argsort()
-    test_topk()
+    # test_topk()
