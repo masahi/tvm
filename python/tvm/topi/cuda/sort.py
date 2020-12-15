@@ -165,9 +165,7 @@ def _sort_inplace(
             middle[0] = tvm.te.min(start[0] + tvm.tir.indexdiv(width, 2), size)
             end[0] = tvm.te.min(start[0] + width, size)
             ## merge the start->middle and middle->end arrays
-            bottom_up_merge(
-                source, dest, source_idx, dest_idx, start[0], middle[0], end[0], even
-            )
+            bottom_up_merge(source, dest, source_idx, dest_idx, start[0], middle[0], end[0], even)
 
     with ib.for_range(0, lim, dtype="int64") as l2_width:
         width = 2 << l2_width
@@ -229,20 +227,20 @@ def _sort_inplace(
 
 
 def sort_ir(
-    keys_in, keys_out, keys_out_swap, axis, is_ascend, values_out=None, values_out_swap=None
+    data, values_out, values_out_swap, axis, is_ascend, indices_out=None, indices_out_swap=None
 ):
     """Low level IR to do nms sorting on the GPU, same usage as tvm.contrib.sort.argsort on the CPU.
 
     Parameters
     ----------
-    keys_in: Buffer
-        Buffer of input keys_in. Keys_in will be sorted in place.
+    data: Buffer
+        Buffer of input data. Data will be sorted in place.
 
-    keys_out : Buffer
-        Output buffer of values of sorted tensor with same shape as keys_in.
+    values_out : Buffer
+        Output buffer of values of sorted tensor with same shape as data.
 
-    keys_out_swap : Buffer
-        Output buffer of values with same shape as keys_in to use as swap.
+    values_out_swap : Buffer
+        Output buffer of values with same shape as data to use as swap.
 
     axis : Int
         Axis long which to sort the input tensor.
@@ -251,10 +249,10 @@ def sort_ir(
         Whether to sort in ascending or descending order.
 
     indicess_out : Buffer
-        Output buffer of indices of sorted tensor with same shape as keys_in.
+        Output buffer of indices of sorted tensor with same shape as data.
 
-    values_out_swap : Buffer
-        Output buffer of indices with same shape as keys_in to use as swap.
+    indices_out_swap : Buffer
+        Output buffer of indices with same shape as data to use as swap.
 
     Returns
     -------
@@ -263,7 +261,7 @@ def sort_ir(
     """
     axis_mul_before = 1
     axis_mul_after = 1
-    shape = keys_in.shape
+    shape = data.shape
     if axis < 0:
         axis = len(shape) + axis
     for i, value in enumerate(shape, 0):
@@ -274,13 +272,13 @@ def sort_ir(
 
     ib = tvm.tir.ir_builder.create()
 
-    keys_in = ib.buffer_ptr(keys_in)
-    keys_out = ib.buffer_ptr(keys_out)
-    keys_out_swap = ib.buffer_ptr(keys_out_swap)
-    if values_out is not None:
-        values_out = ib.buffer_ptr(values_out)
-        assert values_out_swap is not None
-        values_out_swap = ib.buffer_ptr(values_out_swap)
+    data = ib.buffer_ptr(data)
+    values_out = ib.buffer_ptr(values_out)
+    values_out_swap = ib.buffer_ptr(values_out_swap)
+    if indices_out is not None:
+        indices_out = ib.buffer_ptr(indices_out)
+        assert indices_out_swap is not None
+        indices_out_swap = ib.buffer_ptr(indices_out_swap)
 
     # Set up threading
     max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
@@ -289,7 +287,7 @@ def sort_ir(
     nthread_by = axis_mul_before
     nthread_bz = axis_mul_after
 
-    # Copy the keys_in to initial output
+    # Copy the data to initial output
     with ib.new_scope():
         tx = te.thread_axis("threadIdx.x")
         bx = te.thread_axis("blockIdx.x")
@@ -303,9 +301,9 @@ def sort_ir(
         ib.scope_attr(bz, "thread_extent", nthread_bz)
         idx = (by * shape[axis] + tid) * axis_mul_after + bz
         with ib.if_scope(tid < shape[axis]):
-            keys_out[idx] = keys_in[idx]
-            if values_out is not None:
-                values_out[idx] = tvm.tir.generic.cast(tid, values_out.dtype)
+            values_out[idx] = data[idx]
+            if indices_out is not None:
+                indices_out[idx] = tvm.tir.generic.cast(tid, indices_out.dtype)
 
     return _sort_inplace(
         ib,
@@ -313,10 +311,10 @@ def sort_ir(
         axis_mul_before,
         axis_mul_after,
         is_ascend,
-        keys_out,
-        keys_out_swap,
-        values=values_out,
-        values_swap=values_out_swap,
+        values_out,
+        values_out_swap,
+        values=indices_out,
+        values_swap=indices_out_swap,
     )
 
 
@@ -629,8 +627,8 @@ def argsort(data, valid_count=None, axis=-1, is_ascend=1, dtype="float32"):
                 outs[2],
                 axis,
                 is_ascend,
-                values_out=outs[1],
-                values_out_swap=outs[3],
+                indices_out=outs[1],
+                indices_out_swap=outs[3],
             ),
             out_buffers=[value_buf, indices_buf, value_swap_buf, indices_swap_buf],
             name="argsort_gpu",
