@@ -26,6 +26,10 @@ from ..transform import strided_slice, transpose
 from .. import tag
 
 
+def ceil_div(a, b):
+    return tvm.tir.indexdiv(a + b - 1, b)
+
+
 def swap(arr, axis):
     """ swap arr[axis] and arr[-1] """
     return arr[:axis] + [arr[-1]] + arr[axis + 1 : -1] + [arr[axis]]
@@ -62,89 +66,17 @@ def _schedule_sort(outs):
     return s
 
 
-def sort_ir(
-    data, values_out, values_out_swap, axis, is_ascend, indices_out=None, indices_out_swap=None
+def _sort_inplace(
+    ib,
+    size,
+    axis_mul_before,
+    axis_mul_after,
+    is_ascend,
+    keys,
+    keys_swap,
+    values=None,
+    values_swap=None,
 ):
-    """Low level IR to do nms sorting on the GPU, same usage as tvm.contrib.sort.argsort on the CPU.
-
-    Parameters
-    ----------
-    data: Buffer
-        Buffer of input data. Data will be sorted in place.
-
-    values_out : Buffer
-        Output buffer of values of sorted tensor with same shape as data.
-
-    values_out_swap : Buffer
-        Output buffer of values with same shape as data to use as swap.
-
-    axis : Int
-        Axis long which to sort the input tensor.
-
-    is_ascend : Boolean
-        Whether to sort in ascending or descending order.
-
-    indicess_out : Buffer
-        Output buffer of indices of sorted tensor with same shape as data.
-
-    indices_out_swap : Buffer
-        Output buffer of indices with same shape as data to use as swap.
-
-    Returns
-    -------
-    stmt : Stmt
-        The result IR statement.
-    """
-
-    def ceil_div(a, b):
-        return tvm.tir.indexdiv(a + b - 1, b)
-
-    axis_mul_before = 1
-    axis_mul_after = 1
-    shape = data.shape
-    if axis < 0:
-        axis = len(shape) + axis
-    for i, value in enumerate(shape, 0):
-        if i < axis:
-            axis_mul_before *= value
-        elif i > axis:
-            axis_mul_after *= value
-
-    ib = tvm.tir.ir_builder.create()
-
-    data = ib.buffer_ptr(data)
-    values_out = ib.buffer_ptr(values_out)
-    values_out_swap = ib.buffer_ptr(values_out_swap)
-    if indices_out is not None:
-        indices_out = ib.buffer_ptr(indices_out)
-        assert indices_out_swap is not None
-        indices_out_swap = ib.buffer_ptr(indices_out_swap)
-
-    # Set up threading
-    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
-    nthread_tx = max_threads
-    nthread_bx = ceil_div(shape[axis], max_threads)
-    nthread_by = axis_mul_before
-    nthread_bz = axis_mul_after
-
-    # Copy the data to initial output
-    with ib.new_scope():
-        tx = te.thread_axis("threadIdx.x")
-        bx = te.thread_axis("blockIdx.x")
-        ib.scope_attr(tx, "thread_extent", nthread_tx)
-        ib.scope_attr(bx, "thread_extent", nthread_bx)
-        tid = bx * nthread_tx + tx
-
-        by = te.thread_axis("blockIdx.y")
-        bz = te.thread_axis("blockIdx.z")
-        ib.scope_attr(by, "thread_extent", nthread_by)
-        ib.scope_attr(bz, "thread_extent", nthread_bz)
-        idx = (by * shape[axis] + tid) * axis_mul_after + bz
-        with ib.if_scope(tid < shape[axis]):
-            values_out[idx] = data[idx]
-            if indices_out is not None:
-                indices_out[idx] = tvm.tir.generic.cast(tid, indices_out.dtype)
-
     ## we are looping over the array doing mergesort from the bottom up.
     ## The outer loop runs on the host and launches a cuda kernel for each iteration
     ## of the algorithm.
@@ -155,8 +87,14 @@ def sort_ir(
     ## to deal with 8 total elements. On iteration 3, each thread deals with 16 elements, etc
     ## On the final iteration of the algorithm, one thread will merge two sorted lists
     ## to sort the entire array
+    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+    nthread_tx = max_threads
+    nthread_bx = ceil_div(size, max_threads)
+    nthread_by = axis_mul_before
+    nthread_bz = axis_mul_after
+
     lim = tvm.tir.generic.cast(
-        tvm.tir.ceil(tvm.tir.log2(tvm.tir.generic.cast(shape[axis], "float64"))), "int64"
+        tvm.tir.ceil(tvm.tir.log2(tvm.tir.generic.cast(size, "float64"))), "int64"
     )
     with ib.for_range(0, lim, dtype="int64") as l2_width:
         width = 2 << l2_width
@@ -174,7 +112,7 @@ def sort_ir(
             ib.scope_attr(
                 bx,
                 "thread_extent",
-                tvm.tir.generic.cast(ceil_div(shape[axis], width * max_threads), "int32"),
+                tvm.tir.generic.cast(ceil_div(size, width * max_threads), "int32"),
             )
             tid = bx * nthread_tx + tx
 
@@ -202,7 +140,7 @@ def sort_ir(
                 i[0] = start
                 j[0] = middle
                 # set up indexes
-                base_idx = by * shape[axis] * axis_mul_after + bz
+                base_idx = by * size * axis_mul_after + bz
                 # iterate over the output loop
                 with ib.for_range(0, end - start) as k:
                     i_idx = base_idx + i[0] * axis_mul_after
@@ -213,14 +151,14 @@ def sort_ir(
                         def assign_i():
                             """assign i value to current output"""
                             dest[k_idx] = source[i_idx]
-                            if indices_out is not None:
+                            if values is not None:
                                 dest_idx[k_idx] = source_idx[i_idx]
                             i[0] += 1
 
                         def assign_j():
                             """assign j value to current output"""
                             dest[k_idx] = source[j_idx]
-                            if indices_out is not None:
+                            if values is not None:
                                 dest_idx[k_idx] = source_idx[j_idx]
                             j[0] += 1
 
@@ -257,11 +195,11 @@ def sort_ir(
 
             # Call the kernel
             MergeSort(
-                values_out,
-                values_out_swap,
-                indices_out,
-                indices_out_swap,
-                shape[axis],
+                keys,
+                keys_swap,
+                values,
+                values_swap,
+                size,
                 width,
                 tvm.tir.indexmod(l2_width, 2) == 0,
             )
@@ -279,14 +217,106 @@ def sort_ir(
             bz = te.thread_axis("blockIdx.z")
             ib.scope_attr(by, "thread_extent", nthread_by)
             ib.scope_attr(bz, "thread_extent", nthread_bz)
-            idx = (by * shape[axis] + tid) * axis_mul_after + bz
-            with ib.if_scope(tid < shape[axis]):
-                idx = (by * shape[axis] + tid) * axis_mul_after + bz
-                values_out[idx] = values_out_swap[idx]
-                if indices_out is not None:
-                    indices_out[idx] = indices_out_swap[idx]
+            idx = (by * size + tid) * axis_mul_after + bz
+            with ib.if_scope(tid < size):
+                idx = (by * size + tid) * axis_mul_after + bz
+                keys[idx] = keys_swap[idx]
+                if values is not None:
+                    values[idx] = values_swap[idx]
 
     return ib.get()
+
+
+def sort_ir(
+    keys_in, keys_out, keys_out_swap, axis, is_ascend, values_out=None, values_out_swap=None
+):
+    """Low level IR to do nms sorting on the GPU, same usage as tvm.contrib.sort.argsort on the CPU.
+
+    Parameters
+    ----------
+    keys_in: Buffer
+        Buffer of input keys_in. Keys_in will be sorted in place.
+
+    keys_out : Buffer
+        Output buffer of values of sorted tensor with same shape as keys_in.
+
+    keys_out_swap : Buffer
+        Output buffer of values with same shape as keys_in to use as swap.
+
+    axis : Int
+        Axis long which to sort the input tensor.
+
+    is_ascend : Boolean
+        Whether to sort in ascending or descending order.
+
+    indicess_out : Buffer
+        Output buffer of indices of sorted tensor with same shape as keys_in.
+
+    values_out_swap : Buffer
+        Output buffer of indices with same shape as keys_in to use as swap.
+
+    Returns
+    -------
+    stmt : Stmt
+        The result IR statement.
+    """
+    axis_mul_before = 1
+    axis_mul_after = 1
+    shape = keys_in.shape
+    if axis < 0:
+        axis = len(shape) + axis
+    for i, value in enumerate(shape, 0):
+        if i < axis:
+            axis_mul_before *= value
+        elif i > axis:
+            axis_mul_after *= value
+
+    ib = tvm.tir.ir_builder.create()
+
+    keys_in = ib.buffer_ptr(keys_in)
+    keys_out = ib.buffer_ptr(keys_out)
+    keys_out_swap = ib.buffer_ptr(keys_out_swap)
+    if values_out is not None:
+        values_out = ib.buffer_ptr(values_out)
+        assert values_out_swap is not None
+        values_out_swap = ib.buffer_ptr(values_out_swap)
+
+    # Set up threading
+    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+    nthread_tx = max_threads
+    nthread_bx = ceil_div(shape[axis], max_threads)
+    nthread_by = axis_mul_before
+    nthread_bz = axis_mul_after
+
+    # Copy the keys_in to initial output
+    with ib.new_scope():
+        tx = te.thread_axis("threadIdx.x")
+        bx = te.thread_axis("blockIdx.x")
+        ib.scope_attr(tx, "thread_extent", nthread_tx)
+        ib.scope_attr(bx, "thread_extent", nthread_bx)
+        tid = bx * nthread_tx + tx
+
+        by = te.thread_axis("blockIdx.y")
+        bz = te.thread_axis("blockIdx.z")
+        ib.scope_attr(by, "thread_extent", nthread_by)
+        ib.scope_attr(bz, "thread_extent", nthread_bz)
+        idx = (by * shape[axis] + tid) * axis_mul_after + bz
+        with ib.if_scope(tid < shape[axis]):
+            keys_out[idx] = keys_in[idx]
+            if values_out is not None:
+                values_out[idx] = tvm.tir.generic.cast(tid, values_out.dtype)
+
+    return _sort_inplace(
+        ib,
+        shape[axis],
+        axis_mul_before,
+        axis_mul_after,
+        is_ascend,
+        keys_out,
+        keys_out_swap,
+        values=values_out,
+        values_swap=values_out_swap,
+    )
 
 
 def sort_nms_ir(data, valid_count, output, axis, is_ascend):
@@ -509,8 +539,8 @@ def argsort(data, valid_count=None, axis=-1, is_ascend=1, dtype="float32"):
                 outs[2],
                 axis,
                 is_ascend,
-                indices_out=outs[1],
-                indices_out_swap=outs[3],
+                values_out=outs[1],
+                values_out_swap=outs[3],
             ),
             out_buffers=[value_buf, indices_buf, value_swap_buf, indices_swap_buf],
             name="argsort_gpu",
