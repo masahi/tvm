@@ -66,6 +66,45 @@ def _schedule_sort(outs):
     return s
 
 
+def _sort_init(ib, shape, axis, keys_in, keys_out, values_out=None, value_init_func=None):
+    axis_mul_before = 1
+    axis_mul_after = 1
+    if axis < 0:
+        axis = len(shape) + axis
+    for i, value in enumerate(shape, 0):
+        if i < axis:
+            axis_mul_before *= value
+        elif i > axis:
+            axis_mul_after *= value
+
+    # Set up threading
+    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+    nthread_tx = max_threads
+    nthread_bx = ceil_div(shape[axis], max_threads)
+    nthread_by = axis_mul_before
+    nthread_bz = axis_mul_after
+
+    # Copy the keys_in to initial output
+    with ib.new_scope():
+        tx = te.thread_axis("threadIdx.x")
+        bx = te.thread_axis("blockIdx.x")
+        ib.scope_attr(tx, "thread_extent", nthread_tx)
+        ib.scope_attr(bx, "thread_extent", nthread_bx)
+        tid = bx * nthread_tx + tx
+
+        by = te.thread_axis("blockIdx.y")
+        bz = te.thread_axis("blockIdx.z")
+        ib.scope_attr(by, "thread_extent", nthread_by)
+        ib.scope_attr(bz, "thread_extent", nthread_bz)
+        idx = (by * shape[axis] + tid) * axis_mul_after + bz
+        with ib.if_scope(tid < shape[axis]):
+            keys_out[idx] = keys_in[idx]
+            if values_out is not None:
+                values_out[idx] = value_init_func(idx, tid)
+
+    return axis_mul_before, axis_mul_after
+
+
 def _sort_inplace(
     ib,
     size,
@@ -92,10 +131,6 @@ def _sort_inplace(
     nthread_bx = ceil_div(size, max_threads)
     nthread_by = axis_mul_before
     nthread_bz = axis_mul_after
-
-    lim = tvm.tir.generic.cast(
-        tvm.tir.ceil(tvm.tir.log2(tvm.tir.generic.cast(size, "float64"))), "int64"
-    )
 
     def compare(a, b):
         """
@@ -167,6 +202,9 @@ def _sort_inplace(
             ## merge the start->middle and middle->end arrays
             bottom_up_merge(source, dest, source_idx, dest_idx, start[0], middle[0], end[0], even)
 
+    lim = tvm.tir.generic.cast(
+        tvm.tir.ceil(tvm.tir.log2(tvm.tir.generic.cast(size, "float64"))), "int64"
+    )
     with ib.for_range(0, lim, dtype="int64") as l2_width:
         width = 2 << l2_width
         # Define and launch the cuda kernel
@@ -259,18 +297,8 @@ def sort_ir(
     stmt : Stmt
         The result IR statement.
     """
-    axis_mul_before = 1
-    axis_mul_after = 1
-    shape = data.shape
-    if axis < 0:
-        axis = len(shape) + axis
-    for i, value in enumerate(shape, 0):
-        if i < axis:
-            axis_mul_before *= value
-        elif i > axis:
-            axis_mul_after *= value
-
     ib = tvm.tir.ir_builder.create()
+    shape = data.shape
 
     data = ib.buffer_ptr(data)
     values_out = ib.buffer_ptr(values_out)
@@ -280,30 +308,15 @@ def sort_ir(
         assert indices_out_swap is not None
         indices_out_swap = ib.buffer_ptr(indices_out_swap)
 
-    # Set up threading
-    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
-    nthread_tx = max_threads
-    nthread_bx = ceil_div(shape[axis], max_threads)
-    nthread_by = axis_mul_before
-    nthread_bz = axis_mul_after
-
-    # Copy the data to initial output
-    with ib.new_scope():
-        tx = te.thread_axis("threadIdx.x")
-        bx = te.thread_axis("blockIdx.x")
-        ib.scope_attr(tx, "thread_extent", nthread_tx)
-        ib.scope_attr(bx, "thread_extent", nthread_bx)
-        tid = bx * nthread_tx + tx
-
-        by = te.thread_axis("blockIdx.y")
-        bz = te.thread_axis("blockIdx.z")
-        ib.scope_attr(by, "thread_extent", nthread_by)
-        ib.scope_attr(bz, "thread_extent", nthread_bz)
-        idx = (by * shape[axis] + tid) * axis_mul_after + bz
-        with ib.if_scope(tid < shape[axis]):
-            values_out[idx] = data[idx]
-            if indices_out is not None:
-                indices_out[idx] = tvm.tir.generic.cast(tid, indices_out.dtype)
+    axis_mul_before, axis_mul_after = _sort_init(
+        ib,
+        shape,
+        axis,
+        data,
+        values_out,
+        indices_out,
+        value_init_func=lambda _, tid: tvm.tir.generic.cast(tid, indices_out.dtype),
+    )
 
     return _sort_inplace(
         ib,
@@ -351,48 +364,19 @@ def sort_by_key_ir(
     stmt : Stmt
         The result IR statement.
     """
-    axis_mul_before = 1
-    axis_mul_after = 1
-    shape = keys_in.shape
-    if axis < 0:
-        axis = len(shape) + axis
-    for i, value in enumerate(shape, 0):
-        if i < axis:
-            axis_mul_before *= value
-        elif i > axis:
-            axis_mul_after *= value
-
     ib = tvm.tir.ir_builder.create()
+    shape = keys_in.shape
 
     keys_in = ib.buffer_ptr(keys_in)
+    values_in = ib.buffer_ptr(values_in)
     keys_out = ib.buffer_ptr(keys_out)
     keys_out_swap = ib.buffer_ptr(keys_out_swap)
     values_out = ib.buffer_ptr(values_out)
     values_out_swap = ib.buffer_ptr(values_out_swap)
 
-    # Set up threading
-    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
-    nthread_tx = max_threads
-    nthread_bx = ceil_div(shape[axis], max_threads)
-    nthread_by = axis_mul_before
-    nthread_bz = axis_mul_after
-
-    # Copy the keys_in to initial output
-    with ib.new_scope():
-        tx = te.thread_axis("threadIdx.x")
-        bx = te.thread_axis("blockIdx.x")
-        ib.scope_attr(tx, "thread_extent", nthread_tx)
-        ib.scope_attr(bx, "thread_extent", nthread_bx)
-        tid = bx * nthread_tx + tx
-
-        by = te.thread_axis("blockIdx.y")
-        bz = te.thread_axis("blockIdx.z")
-        ib.scope_attr(by, "thread_extent", nthread_by)
-        ib.scope_attr(bz, "thread_extent", nthread_bz)
-        idx = (by * shape[axis] + tid) * axis_mul_after + bz
-        with ib.if_scope(tid < shape[axis]):
-            keys_out[idx] = keys_in[idx]
-            values_out[idx] = values_in[idx]
+    axis_mul_before, axis_mul_after = _sort_init(
+        ib, axis, keys_in, keys_out, values_out, value_init_func=lambda idx, _: values_in[idx]
+    )
 
     return _sort_inplace(
         ib,
