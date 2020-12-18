@@ -120,19 +120,19 @@ def exclusive_sum_scan2d_ir(data, output):
 
 def is_thrust_available():
     """
-    Test if thrust based scan op is available.
+    Test if thrust based scan ops are available.
     """
-    return get_global_func("tvm.contrib.thrust.scan", allow_missing=True) is not None
+    return get_global_func("tvm.contrib.thrust.sum_scan", allow_missing=True) is not None
 
 
-def scan_thrust(data, axis, exclusive=True):
+def scan_thrust(data, exclusive=True):
     data_buf = tvm.tir.decl_buffer(data.shape, data.dtype, "data_buf", data_alignment=8)
     output_buf = tvm.tir.decl_buffer(data.shape, data.dtype, "output_buf", data_alignment=8)
     return te.extern(
         [data.shape],
         [data],
         lambda ins, outs: tvm.tir.call_packed(
-            "tvm.contrib.thrust.scan", ins[0], outs[0], axis, exclusive
+            "tvm.contrib.thrust.sum_scan", ins[0], outs[0], exclusive
         ),
         dtype=[data.dtype],
         in_buffers=[data_buf],
@@ -144,7 +144,6 @@ def scan_thrust(data, axis, exclusive=True):
 
 def exclusive_scan(data, axis=-1):
     # TODO(masahi): support other binary associative operators
-    # TODO(masahi): support inclusive scan
     ndim = len(data.shape)
     if axis < 0:
         axis += ndim
@@ -152,7 +151,7 @@ def exclusive_scan(data, axis=-1):
 
     target = tvm.target.Target.current()
     if target and target.kind.name == "cuda" and is_thrust_available():
-        return scan_thrust(data, axis)
+        return scan_thrust(data, exclusive=True)
 
     if ndim == 1:
         data = expand_dims(data, axis=0)
