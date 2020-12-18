@@ -22,7 +22,7 @@ from tvm import te
 
 from tvm.tir import if_then_else
 from .sort import argsort, argsort_thrust
-from .prefix_scan import exclusive_sum_scan2d
+from .prefix_scan import exclusive_scan
 
 
 def cuda_atomic_add_rule(op):
@@ -348,7 +348,7 @@ def get_valid_counts(data, score_threshold=0, id_index=0, score_index=1):
         (batch_size,), "int32", "valid_count_buf", data_alignment=8
     )
 
-    valid_indices = exclusive_sum_scan2d(valid_boxes)
+    valid_indices = exclusive_scan(valid_boxes, axis=1)
 
     valid_count = te.extern(
         [(batch_size,)],
