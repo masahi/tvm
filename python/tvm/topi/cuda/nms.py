@@ -22,6 +22,7 @@ from tvm import te
 
 from tvm.tir import if_then_else
 from .sort import argsort, argsort_thrust
+from .prefix_scan import exclusive_scan
 
 
 def cuda_atomic_add_rule(op):
@@ -183,115 +184,21 @@ def get_valid_boxes_ir(data, valid_boxes, score_threshold, id_index, score_index
     return ib.get()
 
 
-def get_valid_indices_ir(valid_boxes, valid_count, valid_indices):
-    """Low level IR to get the ouput indices of valid boxes
-    and the count of valid boxes
-
-    Parameters
-    ----------
-    valid_boxes: Buffer
-        2D Buffer  indicating valid boxes with shape [batch_size, num_anchors].
-
-    Returns
-    -------
-    valid_count: Buffer
-        1D Buffer of number of valid boxes per batch [batch_size].
-
-    valid_indices: Buffer
-        2D Buffer indicating output sorted indcies of valid boxes [batch_size, num_anchors].
-    """
+def get_num_valid_boxes_ir(valid_boxes, valid_boxes_ex_scan, valid_count):
+    """TODO"""
     batch_size = valid_boxes.shape[0]
     num_anchors = valid_boxes.shape[1]
 
     ib = tvm.tir.ir_builder.create()
 
     valid_boxes = ib.buffer_ptr(valid_boxes)
-
+    valid_boxes_ex_scan = ib.buffer_ptr(valid_boxes_ex_scan)
     valid_count = ib.buffer_ptr(valid_count)
-    valid_indices = ib.buffer_ptr(valid_indices)
 
     max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
 
     def ceil_div(a, b):
         return tvm.tir.indexdiv(a + b - 1, b)
-
-    # Copy boxes to valid_indices
-    with ib.new_scope():
-        nthread_tx = max_threads
-        nthread_bx = ceil_div(batch_size * num_anchors, max_threads)
-        tx = te.thread_axis("threadIdx.x")
-        bx = te.thread_axis("blockIdx.x")
-        ib.scope_attr(tx, "thread_extent", nthread_tx)
-        ib.scope_attr(bx, "thread_extent", nthread_bx)
-        tid = bx * max_threads + tx
-        with ib.if_scope(tid < batch_size * num_anchors):
-            valid_indices[tid] = valid_boxes[tid]
-
-    nthread_tx = max_threads
-    nthread_bx = ceil_div(num_anchors, max_threads)
-    nthread_by = batch_size
-
-    ## The following algorithm performs parallel prefix sum to get
-    ## a tensor that can later be used to select valid indices
-    # Up Sweep of prefix sum
-    lim = tvm.tir.generic.cast(
-        tvm.tir.ceil(tvm.tir.log2(tvm.tir.generic.cast(num_anchors, "float64"))), "int64"
-    )
-    with ib.for_range(0, lim, dtype="int64") as l2_width:
-        width = 2 << l2_width
-
-        with ib.new_scope():
-            tx = te.thread_axis("threadIdx.x")
-            bx = te.thread_axis("blockIdx.x")
-            ib.scope_attr(tx, "thread_extent", nthread_tx)
-            ib.scope_attr(
-                bx,
-                "thread_extent",
-                tvm.tir.generic.cast(ceil_div(num_anchors, max_threads * width), "int32"),
-            )
-            tid = bx * nthread_tx + tx
-
-            by = te.thread_axis("blockIdx.y")
-            ib.scope_attr(by, "thread_extent", nthread_by)
-            start = ib.allocate("int64", (1,), name="start", scope="local")
-            middle = ib.allocate("int64", (1,), name="middle", scope="local")
-            end = ib.allocate("int64", (1,), name="end", scope="local")
-            start[0] = width * tid
-            with ib.if_scope(start[0] < num_anchors):
-                middle[0] = start[0] + tvm.tir.indexdiv(width, 2)
-                end[0] = tvm.te.min(start[0] + width, num_anchors)
-                with ib.if_scope(middle[0] < num_anchors):
-                    valid_indices[by * num_anchors + end[0] - 1] += valid_indices[
-                        by * num_anchors + middle[0] - 1
-                    ]
-
-    # Down Sweep of prefix sum
-    with ib.for_range(0, lim - 1, dtype="int64") as l2_width:
-        width = 2 << (lim - l2_width - 2)
-
-        with ib.new_scope():
-            tx = te.thread_axis("threadIdx.x")
-            bx = te.thread_axis("blockIdx.x")
-            ib.scope_attr(tx, "thread_extent", nthread_tx)
-            ib.scope_attr(
-                bx,
-                "thread_extent",
-                tvm.tir.generic.cast(ceil_div(num_anchors, max_threads * width), "int32"),
-            )
-            tid = bx * nthread_tx + tx
-
-            by = te.thread_axis("blockIdx.y")
-            ib.scope_attr(by, "thread_extent", nthread_by)
-            start = ib.allocate("int64", (1,), name="start", scope="local")
-            middle = ib.allocate("int64", (1,), name="middle", scope="local")
-            end = ib.allocate("int64", (1,), name="end", scope="local")
-            start[0] = width * tid
-            with ib.if_scope(tvm.tir.all(start[0] > 0, start[0] < num_anchors)):
-                middle[0] = start[0] + tvm.tir.indexdiv(width, 2)
-                with ib.if_scope(middle[0] < num_anchors):
-                    valid_indices[by * num_anchors + middle[0] - 1] += valid_indices[
-                        by * num_anchors + start[0] - 1
-                    ]
 
     ## Write Sum to valid_count
     max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
@@ -304,29 +211,14 @@ def get_valid_indices_ir(valid_boxes, valid_count, valid_indices):
         ib.scope_attr(bx, "thread_extent", nthread_bx)
         tid = bx * max_threads + tx
         with ib.if_scope(tid < batch_size):
-            valid_count[tid] = valid_indices[tid * num_anchors + num_anchors - 1]
-
-    ## Remove invalid indices
-    with ib.new_scope():
-        nthread_tx = max_threads
-        nthread_bx = ceil_div(batch_size * num_anchors, max_threads)
-        tx = te.thread_axis("threadIdx.x")
-        bx = te.thread_axis("blockIdx.x")
-        ib.scope_attr(tx, "thread_extent", nthread_tx)
-        ib.scope_attr(bx, "thread_extent", nthread_bx)
-        tid = bx * max_threads + tx
-        with ib.if_scope(tid < batch_size * num_anchors):
-            with ib.if_scope(valid_boxes[tid] < 1):
-                # if this is an invalid box, mark -1
-                valid_indices[tid] = -1
-            with ib.else_scope():
-                # if this is a valid box, subtract 1 to get 0-based indexing
-                valid_indices[tid] += -1
+            valid_count[tid] = (
+                valid_boxes_ex_scan[tid, num_anchors - 1] + valid_boxes[tid, num_anchors - 1]
+            )
 
     return ib.get()
 
 
-def get_valid_counts_ir(data, valid_indices, out, out_indices):
+def get_valid_counts_ir(data, valid_indices, valid_boxes, out, out_indices):
     """Low level IR to get valid count of bounding boxes
     given a score threshold. Also prepares to move valid boxes to the
     top of input data.
@@ -354,8 +246,9 @@ def get_valid_counts_ir(data, valid_indices, out, out_indices):
     ib = tvm.tir.ir_builder.create()
 
     data = ib.buffer_ptr(data)
-
     valid_indices = ib.buffer_ptr(valid_indices)
+    valid_boxes = ib.buffer_ptr(valid_boxes)
+
     out = ib.buffer_ptr(out)
     out_indices = ib.buffer_ptr(out_indices)
     one = tvm.tir.const(1, dtype=out.dtype)
@@ -395,7 +288,7 @@ def get_valid_counts_ir(data, valid_indices, out, out_indices):
             i = by
             j = tid
             k = bz
-            with ib.if_scope(valid_indices[i, tid] >= 0):
+            with ib.if_scope(valid_boxes[i, tid] > 0):
                 out[(i * num_anchors + valid_indices[i, tid]) * elem_length + k] = data[
                     (i * num_anchors + j) * elem_length + k
                 ]
@@ -454,15 +347,18 @@ def get_valid_counts(data, score_threshold=0, id_index=0, score_index=1):
     valid_count_buf = tvm.tir.decl_buffer(
         (batch_size,), "int32", "valid_count_buf", data_alignment=8
     )
-    valid_count, valid_indices = te.extern(
-        [(batch_size,), (batch_size, num_anchors)],
-        [valid_boxes],
-        lambda ins, outs: get_valid_indices_ir(ins[0], outs[0], outs[1]),
+
+    valid_indices = exclusive_scan(valid_boxes, axis=1)
+
+    valid_count = te.extern(
+        [(batch_size,)],
+        [valid_boxes, valid_indices],
+        lambda ins, outs: get_num_valid_boxes_ir(ins[0], ins[1], outs[0]),
         dtype=["int32"],
-        in_buffers=[valid_boxes_buf],
-        out_buffers=[valid_count_buf, valid_indices_buf],
-        name="get_valid_indices",
-        tag="get_valid_indices_gpu",
+        in_buffers=[valid_boxes_buf, valid_indices_buf],
+        out_buffers=[valid_count_buf],
+        name="get_valid_indices_sum",
+        tag="get_valid_indices_sum_gpu",
     )
 
     out_buf = tvm.tir.decl_buffer(data.shape, data.dtype, "out_buf", data_alignment=8)
@@ -472,10 +368,10 @@ def get_valid_counts(data, score_threshold=0, id_index=0, score_index=1):
 
     out, out_indices = te.extern(
         [data.shape, (batch_size, num_anchors)],
-        [data, valid_indices],
-        lambda ins, outs: get_valid_counts_ir(ins[0], ins[1], outs[0], outs[1]),
+        [data, valid_indices, valid_boxes],
+        lambda ins, outs: get_valid_counts_ir(ins[0], ins[1], ins[2], outs[0], outs[1]),
         dtype=["int32", data.dtype],
-        in_buffers=[data_buf, valid_indices_buf],
+        in_buffers=[data_buf, valid_indices_buf, valid_boxes_buf],
         out_buffers=[out_buf, out_indices_buf],
         name="get_valid_counts",
         tag="get_valid_counts_gpu",
