@@ -254,19 +254,25 @@ void thrust_scan(DLTensor* data,
   thrust::device_ptr<OutType> output_ptr(static_cast<OutType *>(output->data));
   const auto scan_size = data->shape[data->ndim - 1];
 
-  if (data->ndim == 1) {
+  if (data->ndim == 1 || (data->ndim == 2 && data->shape[0] == 1)) {
     if (exclusive) {
       thrust::exclusive_scan(data_ptr, data_ptr + scan_size, output_ptr);
     } else {
       thrust::inclusive_scan(data_ptr, data_ptr + scan_size, output_ptr);
     }
   } else {
+    // Use thrust segmented scan to compute scan on the inner most axis
+    // data->shape[0] * data->shape[1] * ... * data->shape[ndim - 2] scans are
+    // computed in parallel
+
+    // This is for constructing a sequence 0, 0, 0,...,1, 1, 1,...,2, 2, 2,...,
+    // without materializing the sequence vector
     auto counting_iter = thrust::counting_iterator<int>(0);
     auto key_iter = thrust::make_transform_iterator(counting_iter, [scan_size] __device__(int i) {
         return i / scan_size;
     });
-    int64_t size = 0;
-    for (int i = 0; i < data->ndim; ++i) size += data->shape[i];
+    int64_t size = 1;
+    for (int i = 0; i < data->ndim; ++i) size *= data->shape[i];
 
     if (exclusive) {
       thrust::exclusive_scan_by_key(key_iter, key_iter + size, data_ptr, output_ptr);
