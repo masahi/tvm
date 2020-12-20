@@ -124,40 +124,6 @@ def get_valid_boxes_ir(data, valid_boxes, score_threshold, id_index, score_index
     return ib.get()
 
 
-def get_num_valid_boxes_ir(valid_boxes, valid_boxes_ex_scan, valid_count):
-    """TODO"""
-    batch_size = valid_boxes.shape[0]
-    num_anchors = valid_boxes.shape[1]
-
-    ib = tvm.tir.ir_builder.create()
-
-    valid_boxes = ib.buffer_ptr(valid_boxes)
-    valid_boxes_ex_scan = ib.buffer_ptr(valid_boxes_ex_scan)
-    valid_count = ib.buffer_ptr(valid_count)
-
-    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
-
-    def ceil_div(a, b):
-        return tvm.tir.indexdiv(a + b - 1, b)
-
-    ## Write Sum to valid_count
-    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
-    with ib.new_scope():
-        nthread_tx = max_threads
-        nthread_bx = ceil_div(batch_size, max_threads)
-        tx = te.thread_axis("threadIdx.x")
-        bx = te.thread_axis("blockIdx.x")
-        ib.scope_attr(tx, "thread_extent", nthread_tx)
-        ib.scope_attr(bx, "thread_extent", nthread_bx)
-        tid = bx * max_threads + tx
-        with ib.if_scope(tid < batch_size):
-            valid_count[tid] = (
-                valid_boxes_ex_scan[tid, num_anchors - 1] + valid_boxes[tid, num_anchors - 1]
-            )
-
-    return ib.get()
-
-
 def get_valid_counts_ir(data, valid_indices, valid_boxes, out, out_indices):
     """Low level IR to get valid count of bounding boxes
     given a score threshold. Also prepares to move valid boxes to the
@@ -284,22 +250,8 @@ def get_valid_counts(data, score_threshold=0, id_index=0, score_index=1):
     valid_indices_buf = tvm.tir.decl_buffer(
         (batch_size, num_anchors), "int32", "valid_indices_buf", data_alignment=8
     )
-    valid_count_buf = tvm.tir.decl_buffer(
-        (batch_size,), "int32", "valid_count_buf", data_alignment=8
-    )
 
-    valid_indices = exclusive_scan(valid_boxes, axis=1)
-
-    valid_count = te.extern(
-        [(batch_size,)],
-        [valid_boxes, valid_indices],
-        lambda ins, outs: get_num_valid_boxes_ir(ins[0], ins[1], outs[0]),
-        dtype=["int32"],
-        in_buffers=[valid_boxes_buf, valid_indices_buf],
-        out_buffers=[valid_count_buf],
-        name="get_valid_indices_sum",
-        tag="get_valid_indices_sum_gpu",
-    )
+    valid_indices, valid_count = exclusive_scan(valid_boxes, axis=1, return_reduction=True)
 
     out_buf = tvm.tir.decl_buffer(data.shape, data.dtype, "out_buf", data_alignment=8)
     out_indices_buf = tvm.tir.decl_buffer(
