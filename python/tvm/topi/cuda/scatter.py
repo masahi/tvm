@@ -21,10 +21,7 @@ from tvm import te
 from ..scatter import _verify_scatter_nd_inputs
 from .nms import atomic_add
 from .sort import stable_sort_by_key_thrust, is_thrust_available
-
-
-def ceil_div(a, b):
-    return (a + b - 1) // b
+from ..utils import ceil_div
 
 
 def gen_ir_1d(data, indices, updates, axis, out, update_func):
