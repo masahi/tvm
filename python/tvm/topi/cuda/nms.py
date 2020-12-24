@@ -23,6 +23,7 @@ from tvm import te
 from tvm.tir import if_then_else
 from .sort import argsort, argsort_thrust
 from .prefix_scan import exclusive_scan
+from ..utils import ceil_div
 
 
 def cuda_atomic_add_rule(op):
@@ -50,10 +51,6 @@ tvm.target.intrin.register_intrin_rule(
 
 def atomic_add(x, y):
     return tvm.tir.call_intrin(y.dtype, "tir.atomic_add", x, y)
-
-
-def ceil_div(a, b):
-    return tvm.tir.indexdiv(a + b - 1, b)
 
 
 def get_valid_boxes_ir(data, valid_boxes, score_threshold, id_index, score_index):
