@@ -237,9 +237,8 @@ def exclusive_scan(data, axis=-1, return_reduction=False):
                 [data.shape, (data.shape[0],)],
                 [data],
                 lambda ins, outs: exclusive_sum_scan2d_ir(ins[0], outs[0], outs[1]),
-                dtype=[data.dtype],
+                dtype=[data.dtype, data.dtype],
                 in_buffers=[data_buf],
-                out_buffers=[output_buf],
                 name="exclusive_scan",
                 tag="exclusive_scan_gpu",
             )
