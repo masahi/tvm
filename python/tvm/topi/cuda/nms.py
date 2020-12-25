@@ -22,7 +22,7 @@ from tvm import te
 
 from tvm.tir import if_then_else
 from .sort import argsort, argsort_thrust
-from .prefix_scan import exclusive_scan
+from .scan import exclusive_scan
 from ..utils import ceil_div
 
 
