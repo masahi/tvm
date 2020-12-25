@@ -231,7 +231,7 @@ def exclusive_scan(data, axis=-1, return_reduction=False):
     data_buf = tvm.tir.decl_buffer(data.shape, data.dtype, "data_buf", data_alignment=8)
     output_buf = tvm.tir.decl_buffer(data.shape, data.dtype, "output_buf", data_alignment=8)
 
-    if ndim == 2:
+    if len(data.shape) == 2:
         if return_reduction:
             output, reduction = te.extern(
                 [data.shape, (data.shape[0],)],

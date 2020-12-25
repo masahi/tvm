@@ -26,6 +26,7 @@ from .injective import schedule_injective_from_existing
 from .nms import atomic_add
 from .sort import topk, topk_thrust, argsort, argsort_thrust
 from .. import tag
+from ..utils import ceil_div
 from ..transform import strided_slice, adv_index, squeeze
 
 logger = logging.getLogger("topi")
@@ -46,49 +47,29 @@ def _get_sort_func(mode=0):
     return ret
 
 
-def argwhere_1d_ir(condition, out):
-    """Low level IR for argwhere 1D
-
-    Parameters
-    ----------
-    condition : Buffer
-        The condition buffer.
-
-    out : Buffer
-        The output buffer.
-
-    Returns
-    -------
-    stmt : Stmt
-        The result IR statement.
+def compact_nonzero_indices_1d_ir(condition, write_indices, out):
+    """
+    TODO
     """
     ib = tvm.tir.ir_builder.create()
     a0 = condition.shape[0]
 
     condition = ib.buffer_ptr(condition)
+    write_indices = ib.buffer_ptr(write_indices)
     out = ib.buffer_ptr(out)
 
-    valid_index = ib.allocate("int32", (1,), name="valid_index", scope="global")
-    tmp = ib.allocate("int32", (1,), name="tmp", scope="local")
-    one_count = tvm.tir.const(1, dtype="int32")
-
-    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
-    nthread_tx = max_threads
-    # Limit threads to a single block to make sure atomic_add works normally.
+    nthread_tx = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+    nthread_bx = ceil_div(a0, nthread_tx)
     tx = te.thread_axis("threadIdx.x")
+    bx = te.thread_axis("blockIdx.x")
     ib.scope_attr(tx, "thread_extent", nthread_tx)
-    len_inner_for = a0 // nthread_tx + 1
-    valid_index[0] = 0
+    ib.scope_attr(bx, "thread_extent", nthread_bx)
 
-    with ib.for_range(0, len_inner_for, name="i") as i:
-        idx = tx * len_inner_for + i
+    with ib.new_scope():
+        idx = bx * nthread_tx + tx
         with ib.if_scope(idx < a0):
             with ib.if_scope(condition[idx] != 0):
-                tmp[0] = atomic_add(
-                    tvm.tir.call_intrin("handle", "tir.address_of", valid_index[0]),
-                    one_count,
-                )
-                out[tmp[0]] = idx
+                out[write_indices[idx]] = idx
 
     return ib.get()
 
@@ -109,30 +90,34 @@ def argwhere_1d(output_shape, condition):
     stmt : Stmt
         The result IR statement.
     """
+    from ..broadcast import not_equal
+    from ..math import cast
+    from .scan import exclusive_scan
+
+    flags = not_equal(condition, tvm.tir.const(0))
+    write_indices = exclusive_scan(cast(flags, dtype="int32"))
+
     condition_buf = tvm.tir.decl_buffer(
         condition.shape, condition.dtype, "data_buf", data_alignment=8
+    )
+
+    write_indices_buf = tvm.tir.decl_buffer(
+        write_indices.shape, write_indices.dtype, "write_indices_buf", data_alignment=8
     )
     out_buf = tvm.tir.decl_buffer(output_shape, "int32", "out_buf", data_alignment=8)
 
     out = te.extern(
         [output_shape],
-        [condition],
-        lambda ins, outs: argwhere_1d_ir(ins[0], outs[0]),
+        [condition, write_indices],
+        lambda ins, outs: compact_nonzero_indices_1d_ir(ins[0], ins[1], outs[0]),
         dtype=["int32"],
-        in_buffers=[condition_buf],
+        in_buffers=[write_indices_buf, condition_buf],
         out_buffers=[out_buf],
         name="argwhere_1d",
         tag="argwhere1d_gpu",
     )
 
-    if isinstance(out.shape[0], (int, tvm.tir.expr.IntImm)) and int(out.shape[0]) <= 1:
-        return out
-
-    sorted_out = _get_sort_func()(
-        out, k=0, axis=0, ret_type="values", is_ascend="True", dtype="int32"
-    )
-
-    return sorted_out
+    return out
 
 
 def argwhere_2d_ir(condition, out):
