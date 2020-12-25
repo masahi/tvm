@@ -17,7 +17,6 @@
 """Cumsum operator"""
 from ..tir import decl_buffer, ir_builder
 from ..te import extern
-from .transform import reshape
 from .utils import prod
 from .math import cast
 
@@ -53,7 +52,6 @@ def cumsum(data, axis=None, dtype=None):
 
     def gen_ir(data_buf, out_buf):
         ib = ir_builder.create()
-
         data_buf = ib.buffer_ptr(data_buf)
         out_buf = ib.buffer_ptr(out_buf)
 
