@@ -16,13 +16,14 @@
 # under the License.
 """Cumsum operator"""
 from ..tir import decl_buffer, ir_builder
-from ..te import extern, hybrid
+from ..te import extern
 from .transform import reshape
 from .utils import prod
 
 
 def cumsum(data, axis=None, dtype=None):
-    if axis is None:
+    if axis is None and axis != 0:
+        print("reshape", axis)
         axis = 0
         data = reshape(data, (prod(data.shape),))
 
@@ -41,6 +42,8 @@ def cumsum(data, axis=None, dtype=None):
         elif i > axis:
             axis_mul_after *= value
 
+    print(axis_mul_before, axis_mul_after)
+
     def gen_ir(data_buf, out_buf):
         ib = ir_builder.create()
 
@@ -48,10 +51,11 @@ def cumsum(data, axis=None, dtype=None):
         out_buf = ib.buffer_ptr(out_buf)
 
         with ib.for_range(0, axis_mul_before) as i:
-            with ib.for_range(0, axis_mul_before) as j:
+            with ib.for_range(0, axis_mul_after) as j:
                 base_idx = i * shape[axis] * axis_mul_after + j
                 out_buf[base_idx] = data_buf[base_idx]
-                with ib.for_range(1, shape[axis]) as k:
+                with ib.for_range(0, shape[axis] - 1) as _k:
+                    k = _k + 1
                     cur_idx = base_idx + k * axis_mul_after
                     prev_idx = base_idx + (k - 1) * axis_mul_after
                     out_buf[cur_idx] = out_buf[prev_idx] + data_buf[cur_idx]
