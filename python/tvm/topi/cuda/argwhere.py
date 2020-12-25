@@ -25,9 +25,13 @@ from tvm._ffi import get_global_func
 from .injective import schedule_injective_from_existing
 from .nms import atomic_add
 from .sort import topk, topk_thrust, argsort, argsort_thrust
+from .scan import exclusive_scan
 from .. import tag
-from ..utils import ceil_div
-from ..transform import strided_slice, adv_index, squeeze
+from ..utils import ceil_div, prod
+from ..transform import strided_slice, adv_index, squeeze, reshape
+from ..broadcast import not_equal
+from ..math import cast
+
 
 logger = logging.getLogger("topi")
 
@@ -52,7 +56,7 @@ def compact_nonzero_indices_1d_ir(condition, write_indices, out):
     TODO
     """
     ib = tvm.tir.ir_builder.create()
-    a0 = condition.shape[0]
+    a0 = prod(condition.shape)
 
     condition = ib.buffer_ptr(condition)
     write_indices = ib.buffer_ptr(write_indices)
@@ -90,10 +94,6 @@ def argwhere_1d(output_shape, condition):
     stmt : Stmt
         The result IR statement.
     """
-    from ..broadcast import not_equal
-    from ..math import cast
-    from .scan import exclusive_scan
-
     flags = not_equal(condition, tvm.tir.const(0))
     write_indices = exclusive_scan(cast(flags, dtype="int32"))
 
@@ -118,6 +118,35 @@ def argwhere_1d(output_shape, condition):
     )
 
     return out
+
+
+def compact_nonzero_indices_2d_ir(condition, write_indices, out):
+    """
+    TODO
+    """
+    ib = tvm.tir.ir_builder.create()
+    a1 = condition.shape[1]
+    size_1d = prod(condition.shape)
+
+    condition = ib.buffer_ptr(condition)
+    write_indices = ib.buffer_ptr(write_indices)
+    out = ib.buffer_ptr(out)
+
+    nthread_tx = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+    nthread_bx = ceil_div(size_1d, nthread_tx)
+    tx = te.thread_axis("threadIdx.x")
+    bx = te.thread_axis("blockIdx.x")
+    ib.scope_attr(tx, "thread_extent", nthread_tx)
+    ib.scope_attr(bx, "thread_extent", nthread_bx)
+
+    with ib.new_scope():
+        idx = bx * nthread_tx + tx
+        with ib.if_scope(idx < size_1d):
+            with ib.if_scope(condition[idx] != 0):
+                out[write_indices[idx] * 2] = tvm.tir.floordiv(idx, a1)
+                out[write_indices[idx] * 2 + 1] = tvm.tir.floormod(idx, a1)
+
+    return ib.get()
 
 
 def argwhere_2d_ir(condition, out):
@@ -187,50 +216,30 @@ def argwhere_2d(output_shape, condition):
     stmt : Stmt
         The result IR statement.
     """
+    flags = not_equal(condition, tvm.tir.const(0))
+    flags_1d = reshape(flags, (prod(flags.shape),))
+    write_indices = exclusive_scan(cast(flags_1d, dtype="int32"))
+
     condition_buf = tvm.tir.decl_buffer(
         condition.shape, condition.dtype, "data_buf", data_alignment=8
+    )
+
+    write_indices_buf = tvm.tir.decl_buffer(
+        write_indices.shape, write_indices.dtype, "write_indices_buf", data_alignment=8
     )
     out_buf = tvm.tir.decl_buffer(output_shape, "int32", "out_buf", data_alignment=8)
 
     out = te.extern(
         [output_shape],
-        [condition],
-        lambda ins, outs: argwhere_2d_ir(ins[0], outs[0]),
+        [condition, write_indices],
+        lambda ins, outs: compact_nonzero_indices_2d_ir(ins[0], ins[1], outs[0]),
         dtype=["int32"],
-        in_buffers=[condition_buf],
+        in_buffers=[condition_buf, write_indices_buf],
         out_buffers=[out_buf],
-        name="argwhere_2d",
-        tag="argwhere2d_gpu",
+        name="argwhere_1d",
+        tag="argwhere1d_gpu",
     )
 
-    if isinstance(out.shape[0], (int, tvm.tir.expr.IntImm)) and int(out.shape[0]) <= 1:
-        return out
-
-    sort_func = _get_sort_func(1)
-
-    # sort the output from the least significant to the most significant
-    # column.
-    if isinstance(out.shape[0], (int, tvm.tir.expr.IntImm)):
-        out1 = strided_slice(out, [0, 1], [out.shape[0], 2])
-        out2 = sort_func(out1, axis=0, dtype="int32")
-        out3 = squeeze(out2)
-        out = adv_index(out, [out3])
-
-        out1 = strided_slice(out, [0, 0], [out.shape[0], 1])
-        out2 = sort_func(out1, axis=0, dtype="int32")
-        out3 = squeeze(out2)
-
-        out = adv_index(out, [out3])
-    else:
-        out1 = strided_slice(out, [0, 1], [out.shape[0], 2], [1, 1])
-        out2 = sort_func(out1, axis=0, dtype="int32")
-        out3 = squeeze(out2)
-        out = adv_index(out, [out3])
-
-        out1 = strided_slice(out, [0, 0], [out.shape[0], 1], [1, 1])
-        out2 = sort_func(out1, axis=0, dtype="int32")
-        out3 = squeeze(out2)
-        out = adv_index(out, [out3])
     return out
 
 
