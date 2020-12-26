@@ -2082,6 +2082,12 @@ class PyTorchOpConverter:
 
         return _op.cumsum(data, axis=dim, dtype=dtype)
 
+    def masked_fill(self, inputs, input_types):
+        mask = inputs[1]
+        value = _op.cast(_wrap_const(inputs[2]), input_types[0])
+
+        return _op.where(mask, value, inputs[0])
+
     # Operator mappings
     def create_convert_map(self):
         self.convert_map = {
@@ -2277,6 +2283,7 @@ class PyTorchOpConverter:
             "aten::scatter_add": self.scatter_add,
             "aten::__not__": self.logical_not,
             "aten::cumsum": self.cumsum,
+            "aten::masked_fill": self.masked_fill,
         }
 
     def update_convert_map(self, custom_map):
