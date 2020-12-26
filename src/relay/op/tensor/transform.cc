@@ -3518,8 +3518,54 @@ RELAY_REGISTER_OP("adv_index")
     .set_attr<TOpPattern>("TOpPattern", kInjective)
     .set_attr<FTVMCompute>("FTVMCompute", AdvIndexCompute);
 
-
 TVM_REGISTER_NODE_TYPE(CumsumAttrs);
+
+bool CumsumRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
+               const TypeReporter& reporter) {
+  ICHECK_EQ(types.size(), 2);
+  const auto* data = types[0].as<TensorTypeNode>();
+  if (data == nullptr) {
+    ICHECK(types[0].as<IncompleteTypeNode>())
+        << "cast: expect input type to be TensorType but get " << types[0];
+    return false;
+  }
+  const auto* param = attrs.as<CumsumAttrs>();
+  // decide dtype
+
+  auto dtype = param->dtype;
+  if (param->dtype.bits() == 0) {
+    dtype = data->dtype;
+  }
+
+  if (param->axis.defined()) {
+    reporter->Assign(types[1], TensorType(data->shape, dtype));
+  } else {
+    auto prod = data->shape[0];
+    for (int i = 1; i < data->shape.size(); ++i) {
+      prod = prod * data->shape[1];
+    }
+    reporter->Assign(types[1], TensorType({prod}, dtype));
+  }
+
+  return true;
+}
+
+Expr MakeCumsum(Expr data, Integer axis, DataType dtype) {
+  auto attrs = make_object<CumsumAttrs>();
+  attrs->dtype = dtype;
+  attrs->axis = axis;
+  static const Op& op = Op::Get("cumsum");
+  return Call(op, {data}, Attrs(attrs), {});
+}
+
+TVM_REGISTER_GLOBAL("relay.op._make.cumsum").set_body_typed(MakeCumsum);
+
+RELAY_REGISTER_OP("cumsum")
+    .set_num_inputs(1)
+    .add_argument("data", "Tensor", "The input tensor.")
+    .set_support_level(3)
+    .add_type_rel("Cumsum", CumsumRel)
+    .set_attr<TOpPattern>("TOpPattern", kOpaque);
 
 }  // namespace relay
 }  // namespace tvm
