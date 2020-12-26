@@ -3437,6 +3437,20 @@ def test_bincount():
     verify_trace_model(test_fn, [inp, weights], targets)
 
 
+def test_cumsum():
+    def test_fn(dim, dtype=None):
+        return lambda x: torch.cumsum(x, dim=dim, dtype=dtype)
+
+    inp = torch.randint(0, 100, (10000,), dtype=torch.int32)
+    verify_model(test_fn(0), [inp])
+    verify_model(test_fn(0), [inp.to(torch.int64)])
+    verify_model(test_fn(0, dtype=torch.int64), [inp.to(torch.int64)])
+
+    inp = torch.randn((100, 100), dtype=torch.float32)
+    verify_model(test_fn(dim=0, dtype=torch.float64), [inp])
+    verify_model(test_fn(dim=1), [inp])
+
+
 if __name__ == "__main__":
     # some structural tests
     test_forward_traced_function()
@@ -3565,6 +3579,7 @@ if __name__ == "__main__":
     test_forward_scatter()
     test_numel()
     test_bincount()
+    test_cumsum()
 
     # Model tests
     test_resnet18()

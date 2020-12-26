@@ -2072,6 +2072,16 @@ class PyTorchOpConverter:
         is_float = input_type in ["float32", "float64", "float16", "bfloat16"]
         return _expr.const(is_float)
 
+    def cumsum(self, inputs, input_types):
+        data = inputs[0]
+        dim = inputs[1]
+        dtype = inputs[2]
+
+        if inputs[2] is not None:
+            dtype = _convert_dtype_value(inputs[2])
+
+        return _op.cumsum(data, axis=dim, dtype=dtype)
+
     # Operator mappings
     def create_convert_map(self):
         self.convert_map = {
@@ -2266,6 +2276,7 @@ class PyTorchOpConverter:
             "aten::bincount": self.bincount,
             "aten::scatter_add": self.scatter_add,
             "aten::__not__": self.logical_not,
+            "aten::cumsum": self.cumsum,
         }
 
     def update_convert_map(self, custom_map):
