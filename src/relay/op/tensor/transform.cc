@@ -3526,14 +3526,14 @@ bool CumsumRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
   const auto* data = types[0].as<TensorTypeNode>();
   if (data == nullptr) {
     ICHECK(types[0].as<IncompleteTypeNode>())
-        << "cast: expect input type to be TensorType but get " << types[0];
+        << "cumsum: expect input type to be TensorType but get " << types[0];
     return false;
   }
+
   const auto* param = attrs.as<CumsumAttrs>();
-  // decide dtype
 
   auto dtype = param->dtype;
-  if (param->dtype.bits() == 0) {
+  if (dtype.is_void()) {
     dtype = data->dtype;
   }
 
@@ -3541,8 +3541,8 @@ bool CumsumRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
     reporter->Assign(types[1], TensorType(data->shape, dtype));
   } else {
     auto prod = data->shape[0];
-    for (int i = 1; i < data->shape.size(); ++i) {
-      prod = prod * data->shape[1];
+    for (size_t i = 1; i < data->shape.size(); ++i) {
+      prod = prod * data->shape[i];
     }
     reporter->Assign(types[1], TensorType({prod}, dtype));
   }
