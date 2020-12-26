@@ -40,6 +40,7 @@ def is_version_greater_than(ver):
 
 
 def dyn_strided_slice_pattern(inp, end):
+    """A pattern to detect dynamic strided slice op."""
     zero = is_constant()
     cast_like = is_op("cast_like")(zero, is_constant())
     less = is_op("less")(is_constant(), cast_like)
@@ -120,6 +121,33 @@ def batched_nms_pattern(boxes, scores, idxs, iou_threshold, num_boxes, indices):
 
 
 def topk_after_batch_nms_pattern(cond, true_branch, data, valid_count, indices, iou_threshold):
+    """
+    Detect the following pattern used in torchvision detection models.
+
+    def batched_nms(...):
+        if boxes.numel() == 0:
+            return torch.empty((0,), dtype=torch.int64, device=boxes.device)
+        else:
+            ...
+            return nms(boxes_for_nms, scores, iou_threshold)
+
+    keep = batched_nms(boxes, scores, lvl, self.nms_thresh)
+    keep = keep[:post_nms_top_k] # keep only topk scoring predictions
+
+    An equivalent Relay subgraph:
+
+    %1184 = if (%1117) {
+      ...
+    } else {
+      ...
+      %1172 = vision.non_max_suppression(%1167, %1168, %1171, -1, 0.7f, ...);
+      ...
+      %1183 = dyn.strided_slice(%1174, %1180, %1182, ...);
+      cast(%1183, dtype="int64")
+    };
+    %1185 = strided_slice(%1184, begin=[0], end=[1000], strides=[1]);
+
+    """
     nms = is_op("vision.non_max_suppression")(
         data, valid_count, indices, is_constant(), iou_threshold
     )
@@ -134,7 +162,7 @@ def topk_after_batch_nms_pattern(cond, true_branch, data, valid_count, indices, 
 
 
 class MulticlassNMSRewrite(DFPatternCallback):
-    """A callback to rewrite nms and restore batched nms"""
+    """A callback to rewrite nms and restore batched nms."""
 
     def __init__(self):
         super().__init__()
@@ -191,6 +219,8 @@ class MulticlassNMSRewrite(DFPatternCallback):
 
 
 class PostNMSTopKRewrite(DFPatternCallback):
+    """A callback to rewrite nms to exploit max_out_size parameter."""
+
     def __init__(self):
         super().__init__()
         self.cond = wildcard()
@@ -212,6 +242,7 @@ class PostNMSTopKRewrite(DFPatternCallback):
     def rewrite_batch_nms_with_max_out_size(
         self, cond, true_branch, data, valid_count, indices, iou_threshold, post_nms_topk
     ):
+        """Use the detected post NMS topk parameter in NMS op."""
         nms_ret = op.vision.non_max_suppression(
             data=data,
             valid_count=valid_count,
@@ -259,6 +290,8 @@ def rewrite_nms_to_batched_nms(mod):
 
 
 def rewrite_batched_nms_with_max_out_size(mod):
-    """TODO"""
+    """Rewrite the input graph to detect slicing after batched nms and
+    use the slicing size as the parameter max_out_size in NMS.
+    """
     mod["main"] = rewrite(PostNMSTopKRewrite(), mod["main"])
     return mod
