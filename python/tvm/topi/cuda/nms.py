@@ -550,7 +550,7 @@ def nms_ir(
                     tvm.tir.all(
                         k < num_anchors,
                         out[base_idx + offset_k + score_index] > 0, # is the box k still valid?
-                        tvm.tir.any(id_index < 0, out[base_idx + offset_k + id_index] >= 0),
+                        # tvm.tir.any(id_index < 0, out[base_idx + offset_k + id_index] >= 0),
                         tvm.tir.any(
                             force_suppress > 0,
                             id_index < 0,
@@ -567,8 +567,10 @@ def nms_ir(
                     with ib.if_scope(iou >= iou_threshold):
                         # invalidate the box k
                         out[base_idx + offset_k + score_index] = -1.0
-                        with ib.if_scope(id_index >= 0):
-                            out[base_idx + offset_k + id_index] = -1.0
+
+                        if return_indices is False:
+                            with ib.if_scope(id_index >= 0):
+                                out[base_idx + offset_k + id_index] = -1.0
 
                 ib.emit(tvm.tir.Call(None, "tir.tvm_storage_sync", tvm.runtime.convert(["shared"])))
 
@@ -578,14 +580,7 @@ def nms_ir(
         with ib.if_scope(tvm.tir.all(iou_threshold > 0, valid_count[i] > 0)):
             # Apply nms
             with ib.for_range(0, valid_count[i]) as j:
-                with ib.if_scope(
-                    tvm.tir.all(
-                        out[base_idx + (j * box_data_length) + score_index] > -1.0,
-                        tvm.tir.any(
-                            id_index < 0, out[base_idx + j * box_data_length + id_index] >= 0
-                        ),
-                    )
-                ):
+                with ib.if_scope(out[base_idx + (j * box_data_length) + score_index] > -1.0):
                     with ib.if_scope(max_output_size > 0):
                         # No need to do more iteration if we already reach max_output_size boxes
                         with ib.if_scope(num_valid_boxes_local[0] < max_output_size):
