@@ -36,6 +36,18 @@ def is_version_greater_than(ver):
     )
 
 
+def dyn_strided_slice_pattern(inp, end):
+    zero = is_constant()
+    cast_like = is_op("cast_like")(zero, is_constant())
+    less = is_op("less")(is_constant(), cast_like)
+    shape_of = is_op("shape_of")(inp)
+    cast_like = is_op("cast_like")(shape_of, is_constant())
+    add = is_op("add")(is_constant(), cast_like)
+    where = is_op("where")(less, add, is_constant())
+
+    return is_op("dyn.strided_slice")(inp, where, end, is_constant())
+
+
 def batched_nms_pattern(boxes, scores, idxs, iou_threshold, num_boxes, indices):
     """A pattern to detect batched_nms function in torchvision
 
@@ -73,7 +85,6 @@ def batched_nms_pattern(boxes, scores, idxs, iou_threshold, num_boxes, indices):
 
     """
     one = is_constant()
-    zero = is_constant()
 
     # Equivelent PyTorch code from above snippet
     # offsets = idxs.to(boxes) * (max_coordinate + torch.tensor(1).to(boxes))
@@ -84,17 +95,10 @@ def batched_nms_pattern(boxes, scores, idxs, iou_threshold, num_boxes, indices):
 
     # The following doesn't appear in the above Relay snippet. It is required for dynamic
     # stride_slice handling
-    cast_like = is_op("cast_like")(zero, is_constant())
-    less = is_op("less")(is_constant(), cast_like)
-    shape_of = is_op("shape_of")(mul)
-    cast_like = is_op("cast_like")(shape_of, is_constant())
-    add = is_op("add")(is_constant(), cast_like)
-    where = is_op("where")(less, add, is_constant())
     shape_of = is_op("shape_of")(mul)
     cast = is_op("cast")(shape_of)
-
     # This corresponds to offsets[:, None], where offsets is the result of multiplication
-    dyn_strided_slice = is_op("dyn.strided_slice")(mul, where, cast, is_constant())
+    dyn_strided_slice = dyn_strided_slice_pattern(mul, cast)
 
     # Add offsets to the boxes
     expand_dims = is_op("expand_dims")(dyn_strided_slice)
