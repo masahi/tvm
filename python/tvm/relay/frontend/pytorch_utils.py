@@ -16,13 +16,16 @@
 # under the License.
 # pylint: disable=import-outside-toplevel, unused-argument, invalid-name
 """ Common utilities used by PyTorch frontend """
+from .. import expr
 from .. import op
 from ..dataflow_pattern import (
+    wildcard,
     is_constant,
     is_op,
     rewrite,
     is_tuple,
-    wildcard,
+    is_tuple_get_item,
+    is_if,
     DFPatternCallback,
 )
 
@@ -116,7 +119,21 @@ def batched_nms_pattern(boxes, scores, idxs, iou_threshold, num_boxes, indices):
     )
 
 
-class NMSRewrite(DFPatternCallback):
+def topk_after_batch_nms_pattern(cond, true_branch, data, valid_count, indices, iou_threshold):
+    nms = is_op("vision.non_max_suppression")(
+        data, valid_count, indices, is_constant(), iou_threshold
+    )
+    indices = is_op("squeeze")(is_tuple_get_item(nms, 0))
+    size = is_op("squeeze")(is_tuple_get_item(nms, 1))
+    dyn_strided_slice = dyn_strided_slice_pattern(indices, size)
+    cast_i64 = is_op("cast")(dyn_strided_slice)
+
+    batched_nms_result = is_if(cond, true_branch, cast_i64)
+
+    return is_op("strided_slice")(batched_nms_result)
+
+
+class MulticlassNMSRewrite(DFPatternCallback):
     """A callback to rewrite nms and restore batched nms"""
 
     def __init__(self):
@@ -173,10 +190,75 @@ class NMSRewrite(DFPatternCallback):
         return self.convert_batched_nms(boxes, scores, idxs, iou_thres, num_boxes, indices)
 
 
+class PostNMSTopKRewrite(DFPatternCallback):
+    def __init__(self):
+        super().__init__()
+        self.cond = wildcard()
+        self.true_branch = wildcard()
+        self.data = wildcard()
+        self.valid_count = wildcard()
+        self.indices = wildcard()
+        self.iou_threshold = wildcard()
+
+        self.pattern = topk_after_batch_nms_pattern(
+            self.cond,
+            self.true_branch,
+            self.data,
+            self.valid_count,
+            self.indices,
+            self.iou_threshold,
+        )
+
+    def rewrite_batch_nms_with_max_out_size(
+        self, cond, true_branch, data, valid_count, indices, iou_threshold, post_nms_topk
+    ):
+        nms_ret = op.vision.non_max_suppression(
+            data=data,
+            valid_count=valid_count,
+            indices=indices,
+            max_output_size=post_nms_topk,
+            iou_threshold=iou_threshold,
+            force_suppress=False,
+            top_k=-1,
+            coord_start=2,
+            score_index=1,
+            id_index=0,
+            return_indices=True,
+            invalid_to_bottom=False,
+        )
+
+        size = op.squeeze(nms_ret[1], axis=[1])
+        data_slice = op.squeeze(nms_ret[0], axis=[0])
+
+        ret = op.strided_slice(data_slice, begin=expr.const([0]), end=size, slice_mode="size")
+
+        nms_result = op.cast(ret, "int64")
+
+        return expr.If(cond, true_branch, nms_result)
+
+    def callback(self, pre, post, node_map):
+        post_nms_topk = post.attrs.end[0].value
+        return self.rewrite_batch_nms_with_max_out_size(
+            node_map[self.cond][0],
+            node_map[self.true_branch][0],
+            node_map[self.data][0],
+            node_map[self.valid_count][0],
+            node_map[self.indices][0],
+            node_map[self.iou_threshold][0],
+            post_nms_topk,
+        )
+
+
 def rewrite_nms_to_batched_nms(mod):
     """Rewrite the input graph to replace non maximum surpression
     in torchvision that does not take class id into account with the one
     that avoids IOU tests between different classes.
     """
-    mod["main"] = rewrite(NMSRewrite(), mod["main"])
+    mod["main"] = rewrite(MulticlassNMSRewrite(), mod["main"])
+    return mod
+
+
+def rewrite_batched_nms_with_max_out_size(mod):
+    """TODO"""
+    mod["main"] = rewrite(PostNMSTopKRewrite(), mod["main"])
     return mod
