@@ -490,8 +490,6 @@ def nms_ir(
                 tvm.tir.all(top_k > 0, top_k < valid_count[i]), top_k, valid_count[i]
             )
             j = bx * max_threads + tx
-            with ib.if_scope(j < num_anchors):
-                box_indices[i * num_anchors + j] = -1
             with ib.if_scope(j < nkeep):
                 # Fill in out with sorted boxes
                 with ib.for_range(0, box_data_length) as k:
@@ -500,9 +498,16 @@ def nms_ir(
                     ]
             with ib.else_scope():
                 # Indices > nkeep are discarded
+                # Only needed for return_indices = False case
+                if return_indices is False:
+                    with ib.if_scope(j < num_anchors):
+                        with ib.for_range(0, box_data_length) as k:
+                            out[(base_idx + j * box_data_length + k)] = -1.0
+
+            if return_indices:
                 with ib.if_scope(j < num_anchors):
-                    with ib.for_range(0, box_data_length) as k:
-                        out[(base_idx + j * box_data_length + k)] = -1.0
+                    box_indices[i * num_anchors + j] = -1
+
         with ib.else_scope():
             with ib.if_scope(j < valid_count[i]):
                 with ib.for_range(0, box_data_length) as k:
