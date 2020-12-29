@@ -20,7 +20,7 @@ from tvm import te
 from tvm._ffi import get_global_func
 from ..transform import expand_dims, squeeze
 from ..utils import ceil_div
-
+from ..math import cast
 
 def exclusive_sum_scan2d_ir(data, output, reduction=None):
     """
@@ -33,6 +33,8 @@ def exclusive_sum_scan2d_ir(data, output, reduction=None):
 
     data = ib.buffer_ptr(data)
     output = ib.buffer_ptr(output)
+
+    out_dtype = output.dtype
 
     if reduction is not None:
         reduction = ib.buffer_ptr(reduction)
@@ -99,7 +101,7 @@ def exclusive_sum_scan2d_ir(data, output, reduction=None):
         with ib.if_scope(bx < batch_size):
             if reduction is not None:
                 reduction[bx] = output[(bx + 1) * num_anchors - 1]
-            output[(bx + 1) * num_anchors - 1] = 0
+            output[(bx + 1) * num_anchors - 1] = cast(0, out_dtype)
 
     with ib.for_range(0, lim, dtype="int64") as l2_width:
         width = 2 << (lim - l2_width - 1)
@@ -120,7 +122,7 @@ def exclusive_sum_scan2d_ir(data, output, reduction=None):
             start = ib.allocate("int64", (1,), name="start", scope="local")
             middle = ib.allocate("int64", (1,), name="middle", scope="local")
             end = ib.allocate("int64", (1,), name="end", scope="local")
-            tmp = ib.allocate("int32", (1,), name="end", scope="local")
+            tmp = ib.allocate(out_dtype, (1,), name="end", scope="local")
             start[0] = width * tid
             with ib.if_scope(tvm.tir.all(start[0] < num_anchors)):
                 middle[0] = start[0] + tvm.tir.indexdiv(width, 2)
@@ -231,7 +233,7 @@ def exclusive_scan(data, axis=-1, return_reduction=False):
     data_buf = tvm.tir.decl_buffer(data.shape, data.dtype, "data_buf", data_alignment=8)
     output_buf = tvm.tir.decl_buffer(data.shape, data.dtype, "output_buf", data_alignment=8)
 
-    if ndim == 2:
+    if len(data.shape) == 2:
         if return_reduction:
             output, reduction = te.extern(
                 [data.shape, (data.shape[0],)],
@@ -266,3 +268,13 @@ def exclusive_scan(data, axis=-1, return_reduction=False):
         return output, reduction
 
     return output
+
+
+def inclusive_scan(data, axis=None):
+    return data + exclusive_scan(data, axis)
+
+
+def cumsum(data, axis=None, dtype=None):
+    if axis is None and axis != 0:
+        axis = 0
+    return inclusive_scan(data, axis)
