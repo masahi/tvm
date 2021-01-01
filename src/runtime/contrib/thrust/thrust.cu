@@ -170,7 +170,11 @@ void thrust_stable_sort_by_key(DLTensor* keys_in,
                                DLTensor* keys_out,
                                DLTensor* values_out,
                                bool for_scatter) {
-  const auto size = keys_in->shape[0];
+  // TODO: remove for_scatter
+  size_t size = 1;
+  for (size_t i = 0; i < keys_in->shape.size(); ++i) {
+    size *= keys_in->shape[i];
+  }
   thrust::device_ptr<KeyType> keys_in_ptr(static_cast<KeyType *>(keys_in->data));
   thrust::device_ptr<ValueType> values_in_ptr(static_cast<ValueType *>(values_in->data));
   thrust::device_ptr<KeyType> keys_out_ptr(static_cast<KeyType *>(keys_out->data));

@@ -18,6 +18,7 @@
 """Scatter operator """
 import tvm
 from tvm import te
+from ..utils import prod
 from ..scatter import _verify_scatter_nd_inputs
 from .nms import atomic_add
 from .sort import stable_sort_by_key_thrust, is_thrust_available
@@ -417,7 +418,7 @@ def gen_ir_4d(data, indices, updates, axis, out, update_func):
     return ib.get()
 
 
-def gen_scatter_1d_thrust(data, indices_sorted, updates_sorted, axis, out, _):
+def gen_scatter_from_sorted_indices(data, indices_sorted, updates_sorted, axis, out, _):
     """Generate scatter ir for 1d inputs, using a sorting based approach.
     By sorting indices and comparing neighboring two indices, we can tell which
     of elements in the indices tensor can scatter its update value into the output.
@@ -439,7 +440,7 @@ def gen_scatter_1d_thrust(data, indices_sorted, updates_sorted, axis, out, _):
         The values to update, sorted by indices.
 
     axis : int
-        The axis to scatter on. It must be 0 for this function.
+        The axis to scatter on.
 
     out : tir.Tensor
         The output tensor.
@@ -504,6 +505,52 @@ def gen_scatter_1d_thrust(data, indices_sorted, updates_sorted, axis, out, _):
     return ib.get()
 
 
+def _remove_negative_indices(indices, scatter_axis_size):
+    """Convert negative indices to corresponding positive indices."""
+
+    def _ir(indices, out):
+        ib = tvm.tir.ir_builder.create()
+        size = prod(indices.shape)
+
+        indices = ib.buffer_ptr(indices)
+        out = ib.buffer_ptr(out)
+
+        max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+        nthread_tx = max_threads
+        nthread_bx = ceil_div(size, max_threads)
+        tx = te.thread_axis("threadIdx.x")
+        bx = te.thread_axis("blockIdx.x")
+        ib.scope_attr(tx, "thread_extent", nthread_tx)
+        ib.scope_attr(bx, "thread_extent", nthread_bx)
+
+        tid = bx * max_threads + tx
+        with ib.if_scope(tid < size):
+            with ib.if_scope(indices[tid] < 0):
+                out[tid] = indices[tid] + scatter_axis_size
+            with ib.else_scope():
+                out[tid] = indices[tid]
+
+        return ib.get()
+
+    indices_buf = tvm.tir.decl_buffer(indices.shape, indices.dtype, "indices_buf", data_alignment=8)
+    out_indices_buf = tvm.tir.decl_buffer(
+        indices.shape, indices.dtype, "out_indices_buf", data_alignment=8
+    )
+    return te.extern(
+        [indices.shape],
+        [indices],
+        lambda ins, outs: _ir(
+            ins[0],
+            outs[0],
+        ),
+        dtype=[indices.dtype],
+        in_buffers=[indices_buf],
+        out_buffers=[out_indices_buf],
+        name="remove_negative_indices",
+        tag="remove_negative_indices",
+    )
+
+
 def scatter(data, indices, updates, axis=0):
     """Update data at positions defined by indices with values in updates
 
@@ -549,8 +596,9 @@ def scatter(data, indices, updates, axis=0):
 
     in_bufs = [data]
 
-    if rank == 1 and is_thrust_available():
-        ir_funcs[1] = gen_scatter_1d_thrust
+    if is_thrust_available() and prod(indices.shape) > 100:
+        ir_funcs[rank] = gen_scatter_from_sorted_indices
+        indices = _remove_negative_indices(indices, data.shape[axis])
         indices_sorted, updates_sorted = stable_sort_by_key_thrust(
             indices, updates, for_scatter=True
         )
