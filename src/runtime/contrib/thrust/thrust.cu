@@ -22,7 +22,9 @@
  */
 
 #include <thrust/device_ptr.h>
+#include <thrust/device_vector.h>
 #include <thrust/sort.h>
+#include <thrust/tuple.h>
 
 #include <tvm/runtime/registry.h>
 #include <dlpack/dlpack.h>
@@ -170,27 +172,50 @@ void thrust_stable_sort_by_key(DLTensor* keys_in,
                                DLTensor* keys_out,
                                DLTensor* values_out,
                                bool for_scatter) {
-  // TODO: remove for_scatter
   size_t size = 1;
-  for (size_t i = 0; i < keys_in->shape.size(); ++i) {
-    size *= keys_in->shape[i];
+  for (int i = 0; i < keys_in->ndim; ++i) {
+     size *= keys_in->shape[i];
   }
+  const size_t sort_axis_size = keys_in->shape[keys_in->ndim - 1];
+
   thrust::device_ptr<KeyType> keys_in_ptr(static_cast<KeyType *>(keys_in->data));
   thrust::device_ptr<ValueType> values_in_ptr(static_cast<ValueType *>(values_in->data));
   thrust::device_ptr<KeyType> keys_out_ptr(static_cast<KeyType *>(keys_out->data));
   thrust::device_ptr<ValueType> values_out_ptr(static_cast<ValueType *>(values_out->data));
 
   if (for_scatter) {
-    thrust::transform(keys_in_ptr, keys_in_ptr + size, keys_out_ptr, [size] __device__(KeyType k) {
-      if (k < 0) return k + static_cast<KeyType>(size);
+    auto transform_func = [sort_axis_size] __device__(KeyType k) {
+      if (k < 0) return k + static_cast<KeyType>(sort_axis_size);
       return k;
-    });
+    }; // NOLINT(*)
+    thrust::transform(keys_in_ptr, keys_in_ptr + size, keys_out_ptr, transform_func);
   } else {
     thrust::copy(keys_in_ptr, keys_in_ptr + size, keys_out_ptr);
   }
+
   thrust::copy(values_in_ptr, values_in_ptr + size, values_out_ptr);
 
-  thrust::stable_sort_by_key(keys_out_ptr, keys_out_ptr + size, values_out_ptr);
+  if (keys_in->ndim == 1) {
+    thrust::stable_sort_by_key(keys_out_ptr, keys_out_ptr + size, values_out_ptr);
+  } else {
+    // segmented sort by key
+    auto counting_iter = thrust::counting_iterator<int64_t>(0);
+    auto linear_index_to_segment_id = [sort_axis_size] __host__ __device__(int64_t i) {
+      return i / sort_axis_size;
+    }; // NOLINT(*)
+    auto segment_id_iter = thrust::make_transform_iterator(counting_iter,
+                                                           linear_index_to_segment_id);
+    thrust::device_vector<int> segment_id_vec(size);
+    thrust::copy(segment_id_iter, segment_id_iter + size, segment_id_vec.begin());
+
+    using tuple = thrust::tuple<KeyType, ValueType>;
+    auto cmp = [] __host__ __device__(const tuple& tup1, const tuple& tup2) {
+        return thrust::get<0>(tup1) < thrust::get<0>(tup2);
+    }; // NOLINT(*)
+    auto key_val_zip = thrust::make_zip_iterator(thrust::make_tuple(keys_out_ptr, values_out_ptr));
+    thrust::stable_sort_by_key(key_val_zip, key_val_zip + size, segment_id_vec.begin(), cmp);
+    thrust::stable_sort_by_key(segment_id_vec.begin(), segment_id_vec.end(), key_val_zip);
+  }
 }
 
 TVM_REGISTER_GLOBAL("tvm.contrib.thrust.stable_sort_by_key")
