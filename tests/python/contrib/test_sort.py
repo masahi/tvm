@@ -123,12 +123,12 @@ def test_thrust_stable_sort_by_key():
     tvm.testing.assert_allclose(values_out.asnumpy(), ref_values_out, rtol=1e-5)
 
 
-def test_thrust_stable_segmented_sort_by_key():
+def test_thrust_segmented_sort_by_key():
     if not is_thrust_available():
         print("skip because thrust is not enabled...")
         return
 
-    size = (64, 32, 1000)
+    size = (64, 32, 2000)
     keys = te.placeholder(size, name="keys", dtype="int32")
     values = te.placeholder(size, name="values", dtype="int32")
 
@@ -155,7 +155,7 @@ def test_thrust_stable_segmented_sort_by_key():
         res_values = np.zeros_like(values)
         for i in range(indices.shape[0]):
             for j in range(indices.shape[1]):
-                order = np.argsort(indices[i, j])
+                order = np.argsort(indices[i, j], kind="stable")
                 res_indices[i, j] = np.sort(indices[i, j])
                 res_values[i, j] = np.array([values[i, j, k] for k in order])
         return res_indices, res_values
@@ -198,8 +198,8 @@ def test_sort_by_key_gpu():
 
 
 if __name__ == "__main__":
-    test_sort()
-    test_sort_np()
-    test_thrust_stable_sort_by_key()
-    test_sort_by_key_gpu()
-    test_thrust_stable_segmented_sort_by_key()
+    # test_sort()
+    # test_sort_np()
+    # test_thrust_stable_sort_by_key()
+    # test_sort_by_key_gpu()
+    test_thrust_segmented_sort_by_key()
