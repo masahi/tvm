@@ -128,28 +128,6 @@ def test_thrust_segmented_sort_by_key():
         print("skip because thrust is not enabled...")
         return
 
-    size = (64, 32, 2000)
-    keys = te.placeholder(size, name="keys", dtype="int32")
-    values = te.placeholder(size, name="values", dtype="int32")
-
-    keys_out, values_out = stable_sort_by_key_thrust(keys, values)
-
-    ctx = tvm.gpu(0)
-    target = "cuda"
-    s = te.create_schedule([keys_out.op, values_out.op])
-    f = tvm.build(s, [keys, values, keys_out, values_out], target)
-
-    keys_np = np.random.randint(0, 100, size=size).astype(np.int32)
-    values_np = np.random.randint(0, 100, size=size).astype(np.int32)
-
-    keys_np_out = np.zeros(keys_np.shape, np.int32)
-    values_np_out = np.zeros(values_np.shape, np.int32)
-    keys_in = tvm.nd.array(keys_np, ctx)
-    values_in = tvm.nd.array(values_np, ctx)
-    keys_out = tvm.nd.array(keys_np_out, ctx)
-    values_out = tvm.nd.array(values_np_out, ctx)
-    f(keys_in, values_in, keys_out, values_out)
-
     def ref(indices, values):
         res_indices = np.zeros_like(indices)
         res_values = np.zeros_like(values)
@@ -160,9 +138,37 @@ def test_thrust_segmented_sort_by_key():
                 res_values[i, j] = np.array([values[i, j, k] for k in order])
         return res_indices, res_values
 
-    ref_keys_out, ref_values_out = ref(keys_np, values_np)
-    tvm.testing.assert_allclose(keys_out.asnumpy(), ref_keys_out, rtol=1e-5)
-    tvm.testing.assert_allclose(values_out.asnumpy(), ref_values_out, rtol=1e-5)
+    sizes = [(64, 32, 1000), (8, 8, 2000), (8, 8, 4000), (8, 8, 12000)]
+    for size in sizes:
+        keys = te.placeholder(size, name="keys", dtype="int32")
+        values = te.placeholder(size, name="values", dtype="int32")
+
+        keys_out, values_out = stable_sort_by_key_thrust(keys, values)
+
+        ctx = tvm.gpu(0)
+        target = "cuda"
+        s = te.create_schedule([keys_out.op, values_out.op])
+        f = tvm.build(s, [keys, values, keys_out, values_out], target)
+
+        keys_np = np.random.randint(0, 100, size=size).astype(np.int32)
+        values_np = np.random.randint(0, 100, size=size).astype(np.int32)
+
+        keys_np_out = np.zeros(keys_np.shape, np.int32)
+        values_np_out = np.zeros(values_np.shape, np.int32)
+        keys_in = tvm.nd.array(keys_np, ctx)
+        values_in = tvm.nd.array(values_np, ctx)
+        keys_out = tvm.nd.array(keys_np_out, ctx)
+        values_out = tvm.nd.array(values_np_out, ctx)
+        f(keys_in, values_in, keys_out, values_out)
+
+        ftimer = f.time_evaluator(f.entry_name, ctx, number=1, repeat=100)
+        prof_res = np.array(ftimer(keys_in, values_in, keys_out, values_out).results)
+        print(size, "Mean inference time (std dev): %.2f ms (%.2f ms)" %
+                (np.mean(prof_res) * 1000, np.std(prof_res) * 1000))
+
+        ref_keys_out, ref_values_out = ref(keys_np, values_np)
+        tvm.testing.assert_allclose(keys_out.asnumpy(), ref_keys_out, rtol=1e-5)
+        tvm.testing.assert_allclose(values_out.asnumpy(), ref_values_out, rtol=1e-5)
 
 
 def test_sort_by_key_gpu():
