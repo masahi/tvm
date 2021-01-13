@@ -2070,6 +2070,12 @@ class PyTorchOpConverter:
         src = inputs[3]
         return _op.scatter_add(data, index, src, axis=axis)
 
+    def argsort(self, inputs, input_types):
+        data = inputs[0]
+        dim = inputs[1]
+        is_descending = inputs[2]
+        return _op.argsort(data, dim, not is_descending)
+
     def is_floating_point(self, inputs, input_types):
         assert len(inputs) == 1
 
@@ -2277,6 +2283,7 @@ class PyTorchOpConverter:
             "aten::__not__": self.logical_not,
             "aten::hardswish_": self.hard_swish,
             "aten::hardswish": self.hard_swish,
+            "aten::argsort": self.argsort,
         }
 
     def update_convert_map(self, custom_map):
