@@ -263,7 +263,7 @@ def conv2d_strategy_cuda(attrs, inputs, out_type, target):
         else:
             raise RuntimeError("Unsupported conv2d layout {} for CUDA".format(layout))
         # add cudnn implementation
-        if target.kind.name == "cuda" and "cudnn" in target.libs:
+        if target.kind.name in ["cuda", "nvptx"] and "cudnn" in target.libs:
             if layout in ["NCHW", "NHWC"] and padding[0] == padding[2] and padding[1] == padding[3]:
                 strategy.add_implementation(
                     wrap_compute_conv2d(
@@ -705,7 +705,7 @@ def dense_strategy_cuda(attrs, inputs, out_type, target):
                         name="dense_tensorcore.cuda",
                         plevel=20,
                     )
-    if target.kind.name == "cuda" and "cublas" in target.libs:
+    if target.kind.name in ["cuda", "nvptx"] and "cublas" in target.libs:
         strategy.add_implementation(
             wrap_compute_dense(topi.cuda.dense_cublas),
             wrap_topi_schedule(topi.cuda.schedule_dense_cublas),
@@ -858,7 +858,7 @@ def argsort_strategy_cuda(attrs, inputs, out_type, target):
         wrap_topi_schedule(topi.cuda.schedule_argsort),
         name="argsort.cuda",
     )
-    if target.kind.name == "cuda" and get_global_func(
+    if target.kind.name in ["cuda", "nvptx"]  and get_global_func(
         "tvm.contrib.thrust.sort", allow_missing=True
     ):
         strategy.add_implementation(
@@ -879,7 +879,7 @@ def topk_strategy_cuda(attrs, inputs, out_type, target):
         wrap_topi_schedule(topi.cuda.schedule_topk),
         name="topk.cuda",
     )
-    if target.kind.name == "cuda" and get_global_func(
+    if target.kind.name in ["cuda", "nvptx"] and get_global_func(
         "tvm.contrib.thrust.sort", allow_missing=True
     ):
         strategy.add_implementation(

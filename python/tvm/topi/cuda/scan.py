@@ -352,7 +352,7 @@ def exclusive_scan(
 
     def do_scan(data, output_dtype):
         target = tvm.target.Target.current()
-        if target and target.kind.name == "cuda" and is_thrust_available():
+        if target and target.kind.name in ["cuda", "nvptx"] and is_thrust_available():
             return scan_thrust(
                 data, output_dtype, exclusive=True, return_reduction=return_reduction, binop=binop
             )
