@@ -365,28 +365,30 @@ void VulkanDeviceAPI::GetAttr(TVMContext ctx, DeviceAttrKind kind, TVMRetValue* 
   }
   ICHECK_LT(index, context_.size()) << "Invalid device id " << index;
   const auto& vctx = context(index);
+  VkPhysicalDeviceProperties phy_prop;
+  vkGetPhysicalDeviceProperties(vctx.phy_device, &phy_prop);
+
   switch (kind) {
     case kMaxThreadsPerBlock: {
-      VkPhysicalDeviceProperties phy_prop;
-      vkGetPhysicalDeviceProperties(vctx.phy_device, &phy_prop);
       int64_t value = phy_prop.limits.maxComputeWorkGroupInvocations;
       *rv = value;
       break;
     }
     case kMaxSharedMemoryPerBlock: {
-      VkPhysicalDeviceProperties phy_prop;
-      vkGetPhysicalDeviceProperties(vctx.phy_device, &phy_prop);
       int64_t value = phy_prop.limits.maxComputeSharedMemorySize;
       *rv = value;
       break;
     }
     case kWarpSize: {
-      *rv = 1;
+      // VkPhysicalDeviceSubgroupProperties subgroup_prop;
+      // VkPhysicalDeviceProperties2 phy_prop2;
+      // vkGetPhysicalDeviceProperties2(vctx.phy_device, &phy_prop2);
+
+      // int64_t value = subgroup_prop.subgroupSize;
+      *rv = 64;
       break;
     }
     case kComputeVersion: {
-      VkPhysicalDeviceProperties phy_prop;
-      vkGetPhysicalDeviceProperties(vctx.phy_device, &phy_prop);
       int64_t value = phy_prop.apiVersion;
       std::ostringstream os;
       os << VK_VERSION_MAJOR(value) << "." << VK_VERSION_MINOR(value) << "."
@@ -403,8 +405,6 @@ void VulkanDeviceAPI::GetAttr(TVMContext ctx, DeviceAttrKind kind, TVMRetValue* 
     case kExist:
       break;
     case kMaxThreadDimensions: {
-      VkPhysicalDeviceProperties phy_prop;
-      vkGetPhysicalDeviceProperties(vctx.phy_device, &phy_prop);
       int64_t dims[3];
       dims[0] = phy_prop.limits.maxComputeWorkGroupSize[0];
       dims[1] = phy_prop.limits.maxComputeWorkGroupSize[1];
@@ -749,6 +749,10 @@ class VulkanModuleNode final : public runtime::ModuleNode {
     size_t num_buffer_args = NumBufferArgs(info.arg_types);
     f.Init(this, sptr_to_self, name, num_buffer_args, info.arg_types.size() - num_buffer_args,
            info.thread_axis_tags);
+    LOG(INFO) << "GetFunction " << name;
+    for (auto ty: info.arg_types) {
+      LOG(INFO) << "ty: " << ty << ", " << (int)ty.code << ", " << (int)ty.bits;
+    }
     return PackFuncNonBufferArg(std::move(f), info.arg_types);
   }
 
