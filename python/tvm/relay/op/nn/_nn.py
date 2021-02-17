@@ -901,7 +901,7 @@ reg.register_injective_schedule("nn.batch_to_space_nd")
 
 
 @script
-def _conv_shape_func(dshape, kshape, strides, padding, dilation):
+def _conv_shape_func_nchw(dshape, kshape, strides, padding, dilation):
     out = output_tensor((dshape.shape[0],), "int64")
     out[0] = dshape[0]
     out[1] = kshape[0]
@@ -909,6 +909,18 @@ def _conv_shape_func(dshape, kshape, strides, padding, dilation):
     for i in const_range(dshape.shape[0] - 2):
         dilated_k = (kshape[i + 2] - 1) * dilation[i] + 1
         out[i + 2] = (dshape[i + 2] + 2 * padding[i] - dilated_k) // strides[i] + 1
+    return out
+
+
+@script
+def _conv_shape_func_nhwc(dshape, kshape, strides, padding, dilation):
+    out = output_tensor((dshape.shape[0],), "int64")
+    out[0] = dshape[0]
+    out[3] = kshape[3]
+
+    for i in const_range(dshape.shape[0] - 2):
+        dilated_k = (kshape[i] - 1) * dilation[i] + 1
+        out[i + 1] = (dshape[i + 1] + 2 * padding[i] - dilated_k) // strides[i] + 1
     return out
 
 
@@ -920,15 +932,27 @@ def conv_shape_func(attrs, inputs, _):
     padding = get_const_tuple(attrs.padding)
     dilation = get_const_tuple(attrs.dilation)
 
-    return [
-        _conv_shape_func(
-            inputs[0],
-            inputs[1],
-            convert(strides),
-            convert(padding),
-            convert(dilation),
-        )
-    ]
+    if attrs.data_layout == "NCHW":
+        return [
+            _conv_shape_func_nchw(
+                inputs[0],
+                inputs[1],
+                convert(strides),
+                convert(padding),
+                convert(dilation),
+            )
+        ]
+    else:
+        assert attrs.data_layout == "NHWC"
+        return [
+            _conv_shape_func_nhwc(
+                inputs[0],
+                inputs[1],
+                convert(strides),
+                convert(padding),
+                convert(dilation),
+            )
+        ]
 
 
 reg.register_shape_func("nn.conv1d", False, conv_shape_func)
