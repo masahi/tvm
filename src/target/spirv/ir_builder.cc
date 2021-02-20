@@ -127,12 +127,20 @@ SType IRBuilder::GetStructArrayType(const SType& value_type, uint32_t num_elems)
   } else {
     ib_.Begin(spv::OpTypeRuntimeArray).AddSeq(arr_type, value_type).Commit(&global_);
   }
+  LOG(INFO) << "value_type.type.bits(): " << value_type.type.bits();
+  LOG(INFO) << "value_type.type.lanes(): " << value_type.type.lanes();
   int nbits = value_type.type.bits() * value_type.type.lanes();
-  ICHECK_EQ(nbits % 8, 0);
-  uint32_t nbytes = static_cast<uint32_t>(nbits) / 8;
-  // decorate the array type.
-  this->Decorate(spv::OpDecorate, arr_type, spv::DecorationArrayStride, nbytes);
+  // ICHECK_EQ(nbits % 8, 0);
+  // uint32_t nbytes = static_cast<uint32_t>(nbits) / 8;
+  // // decorate the array type.
+  // this->Decorate(spv::OpDecorate, arr_type, spv::DecorationArrayStride, nbytes);
   // declare struct of array
+  if (nbits >= 8) {
+    ICHECK_EQ(nbits % 8, 0);
+    uint32_t nbytes = static_cast<uint32_t>(nbits) / 8;
+    // decorate the array type.
+    this->Decorate(spv::OpDecorate, arr_type, spv::DecorationArrayStride, nbytes);
+  }
   SType struct_type;
   struct_type.id = id_counter_++;
   struct_type.type = DataType::Handle();
@@ -192,6 +200,7 @@ Value IRBuilder::BufferArgument(const SType& value_type, uint32_t descriptor_set
   spv::StorageClass storage_class = spv::StorageClassUniform;
 #endif
 
+  LOG(INFO) << "From BufferArgument";
   SType sarr_type = GetStructArrayType(value_type, 0);
   SType ptr_type = GetPointerType(sarr_type, storage_class);
   Value val = NewValue(ptr_type, kStructArrayPtr);
@@ -274,6 +283,7 @@ void IRBuilder::SetLocalSize(const Value& func, uint32_t local_size[3]) {
 Value IRBuilder::Allocate(const SType& value_type, uint32_t num_elems,
                           spv::StorageClass storage_class) {
   ICHECK_NE(num_elems, 0U);
+  LOG(INFO) << "From allocate";
   SType sarr_type = GetStructArrayType(value_type, num_elems);
   SType ptr_type = GetPointerType(sarr_type, storage_class);
   Value val = NewValue(ptr_type, kStructArrayPtr);
