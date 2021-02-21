@@ -90,6 +90,16 @@ HardwareParams HardwareParamsNode::GetDefaultHardwareParams(const Target& target
     int max_vthread_extent = warp_size / 4;
     return HardwareParams(-1, 16, 64, max_shared_memory_per_block, max_local_memory_per_block,
                           max_threads_per_block, max_vthread_extent, warp_size);
+  } else if (device_type == kDLVulkan) {
+    // Reference: https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+    // This setting looks working for Metal GPUs later than A10
+    int max_shared_memory_per_block = 48000;
+    int max_local_memory_per_block = INT32_MAX;  // skip the check on local memory
+    int max_threads_per_block = 256;
+    int warp_size = 64;
+    int max_vthread_extent = warp_size / 4;
+    return HardwareParams(-1, 16, 64, max_shared_memory_per_block, max_local_memory_per_block,
+                          max_threads_per_block, max_vthread_extent, warp_size);
   } else if (target->kind->device_type == kDLOpenCL) {
     if (target->GetAttr<String>("device", "") == "mali") {
       // We cannot use device API to get hardware attributes like CUDA,

@@ -322,6 +322,9 @@ spirv::Value CodeGenSPIRV::VisitExpr_(const CallNode* op) {
   } else if (op->op.same_as(builtin::popcount())) {
     return builder_->MakeValue(spv::OpBitCount, builder_->GetSType(op->dtype),
                                MakeValue(op->args[0]));
+  } else if (op->op.same_as(builtin::call_pure_extern())) {
+      auto func = Downcast<StringImm>(op->args[0]);
+    LOG(FATAL) << "Unresolved extern call  " << func;
   } else {
     LOG(FATAL) << "Unresolved call  " << op->op;
     return spirv::Value();

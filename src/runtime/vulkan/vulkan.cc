@@ -661,12 +661,12 @@ VulkanDeviceAPI::VulkanDeviceAPI() {
     context_.push_back(std::move(ctx));
   }
 
-  LOG(INFO) << "Initialize Vulkan with " << context_.size() << " devices..";
-  for (size_t i = 0; i < context_.size(); ++i) {
-    LOG(INFO) << "vulkan(" << i << ")=\'" << context_[i].phy_device_prop.deviceName
-              << "\' phy_dev_id=" << context_[i].phy_device
-              << " use_immediate=" << context_[i].UseImmediate();
-  }
+  // LOG(INFO) << "Initialize Vulkan with " << context_.size() << " devices..";
+  // for (size_t i = 0; i < context_.size(); ++i) {
+  //   LOG(INFO) << "vulkan(" << i << ")=\'" << context_[i].phy_device_prop.deviceName
+  //             << "\' phy_dev_id=" << context_[i].phy_device
+  //             << " use_immediate=" << context_[i].UseImmediate();
+  // }
 }
 
 std::vector<uint32_t> VulkanDeviceAPI::GetComputeQueueFamilies(VkPhysicalDevice phy_dev) {
