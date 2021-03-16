@@ -97,9 +97,9 @@ def test_pushconstants():
     dtype = "int32"
     x = relay.var("x", shape=(relay.Any(),), dtype=dtype)
     mod = tvm.IRModule()
-    mod["main"] = relay.Function([x], relay.argsort(x))
+    mod["main"] = relay.Function([x], relay.unique(x)[0])
     x_np = np.random.randint(0, high=10, size=(10,)).astype(dtype)
-    res_np = np.argsort(x_np)
+    res_np = np.unique(x_np)
 
     check_mod(mod, x_np, res_np)
 
