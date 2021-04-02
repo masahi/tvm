@@ -318,7 +318,7 @@ def _nms_loop(
     force_suppress,
     valid_count,
     indices,
-    out_bboxes,
+    calc_overlap_func,
     out_scores,
     out_class_ids,
     box_indices,
@@ -345,7 +345,6 @@ def _nms_loop(
 
         i = by
 
-        base_bbox_idx = i * num_anchors * 4
         num_valid_boxes_local = ib.allocate(
             "int32", (1,), name="num_valid_boxes_local", scope="local"
         )
@@ -363,12 +362,10 @@ def _nms_loop(
 
             num_valid_boxes_local[0] += 1
 
-            offset_j = j * 4
             num_iter_per_thread = ceil_div(nkeep - (j + 1), nthread_tx)
 
             with ib.for_range(0, num_iter_per_thread, name="_k") as _k:
                 k = j + 1 + _k * nthread_tx + tx
-                offset_k = k * 4
 
                 with ib.if_scope(
                     tvm.tir.all(
@@ -381,11 +378,8 @@ def _nms_loop(
                         ),
                     )
                 ):
-                    iou = calculate_overlap(
-                        out_bboxes,
-                        base_bbox_idx + offset_j,
-                        base_bbox_idx + offset_k,
-                    )
+                    iou = calc_overlap_func(i, j, k)
+
                     with ib.if_scope(iou >= iou_threshold):
                         # invalidate the box k
                         out_scores[i, k] = -1.0
@@ -617,6 +611,16 @@ def nms_ir(
 
                 box_indices[i * num_anchors + j] = j
 
+    def calc_overlap(i, j, k):
+        offset_j = j * 4
+        offset_k = k * 4
+        base_bbox_idx = i * num_anchors * 4
+        return calculate_overlap(
+            out_bboxes,
+            base_bbox_idx + offset_j,
+            base_bbox_idx + offset_k,
+        )
+
     return _nms_loop(
         ib, batch_size, num_anchors,
         sorted_index,
@@ -628,7 +632,7 @@ def nms_ir(
         force_suppress,
         valid_count,
         indices,
-        out_bboxes,
+        calc_overlap,
         out_scores,
         out_class_ids,
         box_indices,
