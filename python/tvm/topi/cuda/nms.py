@@ -268,6 +268,165 @@ def get_valid_counts(data, score_threshold=0, id_index=0, score_index=1):
     return [valid_count, out, out_indices]
 
 
+def get_boundaries(output, box_idx):
+    l = tvm.te.min(
+        output[box_idx],
+        output[box_idx + 2],
+    )
+    t = tvm.te.min(
+        output[box_idx + 1],
+        output[box_idx + 3],
+    )
+    r = tvm.te.max(
+        output[box_idx],
+        output[box_idx + 2],
+    )
+    b = tvm.te.max(
+        output[box_idx + 1],
+        output[box_idx + 3],
+    )
+    return l, t, r, b
+
+
+def calculate_overlap(out_tensor, box_a_idx, box_b_idx):
+    """Calculate overlap of two boxes."""
+    a_l, a_t, a_r, a_b = get_boundaries(out_tensor, box_a_idx)
+    b_l, b_t, b_r, b_b = get_boundaries(out_tensor, box_b_idx)
+
+    # Overlapping width and height
+    w = tvm.te.max(0.0, tvm.te.min(a_r, b_r) - tvm.te.max(a_l, b_l))
+    h = tvm.te.max(0.0, tvm.te.min(a_b, b_b) - tvm.te.max(a_t, b_t))
+
+    # Overlapping area
+    area = h * w
+
+    # total area of the figure formed by box a and box b
+    # except for overlapping area
+    u = (a_r - a_l) * (a_b - a_t) + (b_r - b_l) * (b_b - b_t) - area
+    return tvm.tir.Select(u <= 0.0, 0.0, area / u)
+
+
+def _nms_loop(
+    ib,
+    batch_size, num_anchors,
+    sorted_index,
+    return_indices,
+    max_output_size,
+    id_index,
+    top_k,
+    iou_threshold,
+    force_suppress,
+    valid_count,
+    indices,
+    out_bboxes,
+    out_scores,
+    out_class_ids,
+    box_indices,
+    num_valid_boxes,
+):
+    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+
+    with ib.new_scope():
+        nthread_by = batch_size
+        nthread_tx = max_threads
+
+        # Some cuda architectures have smaller limit of 32K for cudaDevAttrMaxRegistersPerBlock
+        # vs 64K for most GPUs. Since this kernel uses many registers (around 35), the limit will
+        # be exceeded with 1024 threads.
+        target = tvm.target.Target.current(allow_none=False)
+        if target.kind.name == "cuda":
+            if nvcc.get_target_compute_version(target) in ["3.2", "5.3", "6.2"]:
+                nthread_tx = 512
+
+        by = te.thread_axis("blockIdx.y")
+        tx = te.thread_axis("threadIdx.x")
+        ib.scope_attr(by, "thread_extent", nthread_by)
+        ib.scope_attr(tx, "thread_extent", nthread_tx)
+
+        i = by
+
+        base_bbox_idx = i * num_anchors * 4
+        num_valid_boxes_local = ib.allocate(
+            "int32", (1,), name="num_valid_boxes_local", scope="local"
+        )
+        num_valid_boxes_local[0] = 0
+        nkeep = if_then_else(tvm.tir.all(top_k > 0, top_k < valid_count[i]), top_k, valid_count[i])
+
+        def nms_inner_loop(ib, j):
+            # The box j is valid, invalidate other boxes that overlap with j above iou_threshold
+
+            # When return_indices is False, no need to populate box_indices
+            if return_indices:
+                with ib.if_scope(tx + 0 == 0):
+                    orig_idx = sorted_index[i * num_anchors + j]
+                    box_indices[i, num_valid_boxes_local[0]] = indices[i, orig_idx]
+
+            num_valid_boxes_local[0] += 1
+
+            offset_j = j * 4
+            num_iter_per_thread = ceil_div(nkeep - (j + 1), nthread_tx)
+
+            with ib.for_range(0, num_iter_per_thread, name="_k") as _k:
+                k = j + 1 + _k * nthread_tx + tx
+                offset_k = k * 4
+
+                with ib.if_scope(
+                    tvm.tir.all(
+                        k < nkeep,
+                        out_scores[i, k] > 0,  # is the box k still valid?
+                        tvm.tir.any(
+                            force_suppress > 0,
+                            id_index < 0,
+                            out_class_ids[i, k] == out_class_ids[i, j],
+                        ),
+                    )
+                ):
+                    iou = calculate_overlap(
+                        out_bboxes,
+                        base_bbox_idx + offset_j,
+                        base_bbox_idx + offset_k,
+                    )
+                    with ib.if_scope(iou >= iou_threshold):
+                        # invalidate the box k
+                        out_scores[i, k] = -1.0
+
+                        if return_indices is False and id_index >= 0:
+                            out_class_ids[i, k] = -1.0
+
+                ib.emit(tvm.tir.Call(None, "tir.tvm_storage_sync", tvm.runtime.convert(["shared"])))
+
+        if isinstance(max_output_size, int):
+            max_output_size = tvm.tir.const(max_output_size)
+
+        with ib.if_scope(tvm.tir.all(iou_threshold > 0, valid_count[i] > 0)):
+            # Apply nms
+            with ib.if_scope(max_output_size > 0):
+                # No need to do more iteration if we have already reached max_output_size boxes
+                box_idx = ib.allocate("int32", (1,), name="box_idx", scope="local")
+                box_idx[0] = 0
+                with ib.while_loop(
+                    tvm.tir.all(box_idx[0] < nkeep, num_valid_boxes_local[0] < max_output_size)
+                ):
+                    # Proceed to the inner loop if the box with id box_idx is still valid
+                    with ib.if_scope(out_scores[i, box_idx[0]] > -1.0):
+                        nms_inner_loop(ib, box_idx[0])
+                    box_idx[0] += 1
+
+            with ib.else_scope():
+                with ib.for_range(0, nkeep, name="j") as j:
+                    # Proceed to the inner loop if the box j is still valid
+                    with ib.if_scope(out_scores[i, j] > -1.0):
+                        nms_inner_loop(ib, j)
+
+            with ib.if_scope(tx + 0 == 0):
+                num_valid_boxes[i] = num_valid_boxes_local[0]
+
+        with ib.else_scope():
+            num_valid_boxes[i] = 0
+
+    return ib.get()
+
+
 def nms_ir(
     data,
     sorted_index,
@@ -355,43 +514,6 @@ def nms_ir(
     stmt : Stmt
         The result IR statement.
     """
-
-    def get_boundaries(output, box_idx):
-        l = tvm.te.min(
-            output[box_idx],
-            output[box_idx + 2],
-        )
-        t = tvm.te.min(
-            output[box_idx + 1],
-            output[box_idx + 3],
-        )
-        r = tvm.te.max(
-            output[box_idx],
-            output[box_idx + 2],
-        )
-        b = tvm.te.max(
-            output[box_idx + 1],
-            output[box_idx + 3],
-        )
-        return l, t, r, b
-
-    def calculate_overlap(out_tensor, box_a_idx, box_b_idx):
-        """Calculate overlap of two boxes."""
-        a_l, a_t, a_r, a_b = get_boundaries(out_tensor, box_a_idx)
-        b_l, b_t, b_r, b_b = get_boundaries(out_tensor, box_b_idx)
-
-        # Overlapping width and height
-        w = tvm.te.max(0.0, tvm.te.min(a_r, b_r) - tvm.te.max(a_l, b_l))
-        h = tvm.te.max(0.0, tvm.te.min(a_b, b_b) - tvm.te.max(a_t, b_t))
-
-        # Overlapping area
-        area = h * w
-
-        # total area of the figure formed by box a and box b
-        # except for overlapping area
-        u = (a_r - a_l) * (a_b - a_t) + (b_r - b_l) * (b_b - b_t) - area
-        return tvm.tir.Select(u <= 0.0, 0.0, area / u)
-
     batch_size = data.shape[0]
     num_anchors = data.shape[1]
     box_data_length = data.shape[2]
@@ -495,105 +617,23 @@ def nms_ir(
 
                 box_indices[i * num_anchors + j] = j
 
-    with ib.new_scope():
-        nthread_by = batch_size
-        nthread_tx = max_threads
-
-        # Some cuda architectures have smaller limit of 32K for cudaDevAttrMaxRegistersPerBlock
-        # vs 64K for most GPUs. Since this kernel uses many registers (around 35), the limit will
-        # be exceeded with 1024 threads.
-        target = tvm.target.Target.current(allow_none=False)
-        if target.kind.name == "cuda":
-            if nvcc.get_target_compute_version(target) in ["3.2", "5.3", "6.2"]:
-                nthread_tx = 512
-
-        by = te.thread_axis("blockIdx.y")
-        tx = te.thread_axis("threadIdx.x")
-        ib.scope_attr(by, "thread_extent", nthread_by)
-        ib.scope_attr(tx, "thread_extent", nthread_tx)
-
-        i = by
-
-        base_bbox_idx = i * num_anchors * 4
-        num_valid_boxes_local = ib.allocate(
-            "int32", (1,), name="num_valid_boxes_local", scope="local"
-        )
-        num_valid_boxes_local[0] = 0
-        nkeep = if_then_else(tvm.tir.all(top_k > 0, top_k < valid_count[i]), top_k, valid_count[i])
-
-        def nms_inner_loop(ib, j):
-            # The box j is valid, invalidate other boxes that overlap with j above iou_threshold
-
-            # When return_indices is False, no need to populate box_indices
-            if return_indices:
-                with ib.if_scope(tx + 0 == 0):
-                    orig_idx = sorted_index[i * num_anchors + j]
-                    box_indices[i, num_valid_boxes_local[0]] = indices[i, orig_idx]
-
-            num_valid_boxes_local[0] += 1
-
-            offset_j = j * 4
-            num_iter_per_thread = ceil_div(nkeep - (j + 1), nthread_tx)
-
-            with ib.for_range(0, num_iter_per_thread, name="_k") as _k:
-                k = j + 1 + _k * nthread_tx + tx
-                offset_k = k * 4
-
-                with ib.if_scope(
-                    tvm.tir.all(
-                        k < nkeep,
-                        out_scores[i, k] > 0,  # is the box k still valid?
-                        tvm.tir.any(
-                            force_suppress > 0,
-                            id_index < 0,
-                            out_class_ids[i, k] == out_class_ids[i, j],
-                        ),
-                    )
-                ):
-                    iou = calculate_overlap(
-                        out_bboxes,
-                        base_bbox_idx + offset_j,
-                        base_bbox_idx + offset_k,
-                    )
-                    with ib.if_scope(iou >= iou_threshold):
-                        # invalidate the box k
-                        out_scores[i, k] = -1.0
-
-                        if return_indices is False and id_index >= 0:
-                            out_class_ids[i, k] = -1.0
-
-                ib.emit(tvm.tir.Call(None, "tir.tvm_storage_sync", tvm.runtime.convert(["shared"])))
-
-        if isinstance(max_output_size, int):
-            max_output_size = tvm.tir.const(max_output_size)
-
-        with ib.if_scope(tvm.tir.all(iou_threshold > 0, valid_count[i] > 0)):
-            # Apply nms
-            with ib.if_scope(max_output_size > 0):
-                # No need to do more iteration if we have already reached max_output_size boxes
-                box_idx = ib.allocate("int32", (1,), name="box_idx", scope="local")
-                box_idx[0] = 0
-                with ib.while_loop(
-                    tvm.tir.all(box_idx[0] < nkeep, num_valid_boxes_local[0] < max_output_size)
-                ):
-                    # Proceed to the inner loop if the box with id box_idx is still valid
-                    with ib.if_scope(out_scores[i, box_idx[0]] > -1.0):
-                        nms_inner_loop(ib, box_idx[0])
-                    box_idx[0] += 1
-
-            with ib.else_scope():
-                with ib.for_range(0, nkeep, name="j") as j:
-                    # Proceed to the inner loop if the box j is still valid
-                    with ib.if_scope(out_scores[i, j] > -1.0):
-                        nms_inner_loop(ib, j)
-
-            with ib.if_scope(tx + 0 == 0):
-                num_valid_boxes[i] = num_valid_boxes_local[0]
-
-        with ib.else_scope():
-            num_valid_boxes[i] = 0
-
-    return ib.get()
+    return _nms_loop(
+        ib, batch_size, num_anchors,
+        sorted_index,
+        return_indices,
+        max_output_size,
+        id_index,
+        top_k,
+        iou_threshold,
+        force_suppress,
+        valid_count,
+        indices,
+        out_bboxes,
+        out_scores,
+        out_class_ids,
+        box_indices,
+        num_valid_boxes,
+    )
 
 
 def _fetch_score_ir(data, score, axis):
