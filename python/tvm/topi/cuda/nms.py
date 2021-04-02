@@ -625,6 +625,19 @@ def _fetch_score_ir(data, score, axis):
     return ib.get()
 
 
+def _dispatch_sort(scores):
+    target = tvm.target.Target.current()
+    if target and (
+        can_use_thrust(target, "tvm.contrib.thrust.sort")
+        or can_use_rocthrust(target, "tvm.contrib.thrust.sort")
+    ):
+        sort_tensor = argsort_thrust(scores, axis=1, is_ascend=False, dtype="int32")
+    else:
+        sort_tensor = argsort(scores, axis=1, is_ascend=False, dtype="int32")
+
+    return sort_tensor
+
+
 def _get_sorted_indices(data, data_buf, score_index, score_shape):
     """Extract a 1D score tensor from the packed input and do argsort on it."""
     score_buf = tvm.tir.decl_buffer(score_shape, data.dtype, "score_buf", data_alignment=8)
@@ -642,17 +655,7 @@ def _get_sorted_indices(data, data_buf, score_index, score_shape):
         name="fetch_score",
         tag="fetch_score",
     )
-
-    target = tvm.target.Target.current()
-    if target and (
-        can_use_thrust(target, "tvm.contrib.thrust.sort")
-        or can_use_rocthrust(target, "tvm.contrib.thrust.sort")
-    ):
-        sort_tensor = argsort_thrust(score_tensor, axis=1, is_ascend=False, dtype="int32")
-    else:
-        sort_tensor = argsort(score_tensor, axis=1, is_ascend=False, dtype="int32")
-
-    return sort_tensor
+    return _dispatch_sort(score_tensor)
 
 
 def _run_nms(
@@ -948,23 +951,8 @@ def compact_nonzero_indices_ir(scores_threshold_flags, write_indices, out):
     return ib.get()
 
 
-def all_class_non_max_suppression(
-    boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold
-):
-    batch, num_boxes, _ = boxes.shape
-    _, num_class, _ = scores.shape
-
-    scores = reshape(scores, (batch * num_class, num_boxes))
-
-    target = tvm.target.Target.current()
-    if target and (
-        can_use_thrust(target, "tvm.contrib.thrust.sort")
-        or can_use_rocthrust(target, "tvm.contrib.thrust.sort")
-    ):
-        sorted_indices = argsort_thrust(scores, axis=1, is_ascend=False, dtype="int32")
-    else:
-        sorted_indices = argsort(scores, axis=1, is_ascend=False, dtype="int32")
-
+def _get_valid_box_indices(scores, score_threshold):
+    batch, num_class, num_boxes = scores.shape
     flags = cast(greater(scores, tvm.tir.const(score_threshold)), dtype="int32")
     write_indices, valid_count = exclusive_scan(flags, return_reduction=True)
 
@@ -982,3 +970,15 @@ def all_class_non_max_suppression(
         name="get_valid_box",
         tag="get_valid_box",
     )
+
+    return valid_box_indices, valid_count
+
+
+def all_class_non_max_suppression(
+    boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold
+):
+    batch, num_class, num_boxes = scores.shape
+
+    scores = reshape(scores, (batch * num_class, num_boxes))
+    sorted_indices = _dispatch_sort(scores)
+    valid_box_indices, valid_count = _get_valid_box_indices(scores, score_threshold)
