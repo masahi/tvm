@@ -311,7 +311,7 @@ def _nms_loop(
     batch_size, num_anchors,
     sorted_index,
     return_indices,
-    max_output_size,
+    get_max_output_size_func,
     id_index,
     top_k,
     iou_threshold,
@@ -343,15 +343,12 @@ def _nms_loop(
         ib.scope_attr(by, "thread_extent", nthread_by)
         ib.scope_attr(tx, "thread_extent", nthread_tx)
 
-        i = by
-
         num_valid_boxes_local = ib.allocate(
             "int32", (1,), name="num_valid_boxes_local", scope="local"
         )
         num_valid_boxes_local[0] = 0
-        nkeep = if_then_else(tvm.tir.all(top_k > 0, top_k < valid_count[i]), top_k, valid_count[i])
 
-        def nms_inner_loop(ib, j):
+        def nms_inner_loop(ib, i, j, nkeep):
             # The box j is valid, invalidate other boxes that overlap with j above iou_threshold
 
             # When return_indices is False, no need to populate box_indices
@@ -389,8 +386,10 @@ def _nms_loop(
 
                 ib.emit(tvm.tir.Call(None, "tir.tvm_storage_sync", tvm.runtime.convert(["shared"])))
 
-        if isinstance(max_output_size, int):
-            max_output_size = tvm.tir.const(max_output_size)
+        i = by
+
+        max_output_size = get_max_output_size_func(i)
+        nkeep = if_then_else(tvm.tir.all(top_k > 0, top_k < valid_count[i]), top_k, valid_count[i])
 
         with ib.if_scope(tvm.tir.all(iou_threshold > 0, valid_count[i] > 0)):
             # Apply nms
@@ -403,20 +402,17 @@ def _nms_loop(
                 ):
                     # Proceed to the inner loop if the box with id box_idx is still valid
                     with ib.if_scope(out_scores[i, box_idx[0]] > -1.0):
-                        nms_inner_loop(ib, box_idx[0])
+                        nms_inner_loop(ib, i, box_idx[0], nkeep)
                     box_idx[0] += 1
 
             with ib.else_scope():
                 with ib.for_range(0, nkeep, name="j") as j:
                     # Proceed to the inner loop if the box j is still valid
                     with ib.if_scope(out_scores[i, j] > -1.0):
-                        nms_inner_loop(ib, j)
+                        nms_inner_loop(ib, i, j, nkeep)
 
             with ib.if_scope(tx + 0 == 0):
                 num_valid_boxes[i] = num_valid_boxes_local[0]
-
-        with ib.else_scope():
-            num_valid_boxes[i] = 0
 
     return ib.get()
 
@@ -621,11 +617,14 @@ def nms_ir(
             base_bbox_idx + offset_k,
         )
 
+    if isinstance(max_output_size, int):
+        max_output_size = tvm.tir.const(max_output_size)
+
     return _nms_loop(
         ib, batch_size, num_anchors,
         sorted_index,
         return_indices,
-        max_output_size,
+        lambda _: max_output_size,
         id_index,
         top_k,
         iou_threshold,
