@@ -65,6 +65,11 @@ _proposal_implement = {
     "gpu": (topi.cuda.proposal, topi.cuda.schedule_proposal),
 }
 
+_all_class_nms_implement = {
+    "generic": (topi.vision.non_max_suppression, topi.generic.schedule_nms),
+    "gpu": (topi.cuda.non_max_suppression, topi.cuda.schedule_nms),
+}
+
 
 def verify_get_valid_counts(dshape, score_threshold, id_index, score_index):
     dtype = "float32"
@@ -623,11 +628,85 @@ def test_proposal():
     verify_proposal(np_cls_prob, np_bbox_pred, np_im_info, np_out, attrs)
 
 
+def verify_all_class_non_max_suppression(
+    boxes_np, scores_np, max_output_boxes_per_class, iou_threshold, score_threshold
+):
+    dshape = boxes_np.shape
+    batch, num_boxes, _ = dshape
+    _, num_class, _ = scores_np.shape
+    boxes = te.placeholder(dshape, name="boxes")
+    scores = te.placeholder(scores_np.shape, dtype="float32", name="scores")
+
+    def check_device(target):
+        dev = tvm.device(target, 0)
+        if not tvm.testing.device_enabled(target):
+            print("Skip because %s is not enabled" % target)
+            return
+        print("Running on target: %s" % target)
+        with tvm.target.Target(target):
+            fcompute, fschedule = tvm.topi.testing.dispatch(target, _all_class_nms_implement)
+            out = fcompute(
+                boxes,
+                scores,
+                max_output_boxes_per_class,
+                iou_threshold,
+                score_threshold
+            )
+            s = fschedule(out)
+
+        tvm_boxes = tvm.nd.array(boxes_np, dev)
+        tvm_scores = tvm.nd.array(scores_np, dev)
+        selected_indices = tvm.nd.array(np.zeros((batch, num_class * num_boxes, 2), "int64"))
+        num_detections = tvm.nd.array(np.zeros((batch,), "int64"))
+
+        f = tvm.build(s, [boxes, scores, out[0], out[1]], target)
+        f(tvm_boxes, tvm_scores, selected_indices, num_detections)
+        # tvm.testing.assert_allclose(tvm_indices_out.asnumpy(), np_indices_result, rtol=1e-4)
+
+    for target in ["vulkan"]:
+        check_device(target)
+
+
+@tvm.testing.uses_gpu
+def test_all_class_non_max_suppression():
+    boxes = np.array(
+        [
+            [
+                [0.0, 0.0, 0.3, 0.3],
+                [0.0, 0.0, 0.4, 0.4],
+                [0.0, 0.0, 0.5, 0.5],
+                [0.5, 0.5, 0.9, 0.9],
+                [0.5, 0.5, 1.0, 1.0],
+            ],
+            [
+                [0.0, 0.0, 0.3, 0.3],
+                [0.0, 0.0, 0.4, 0.4],
+                [0.5, 0.5, 0.95, 0.95],
+                [0.5, 0.5, 0.96, 0.96],
+                [0.5, 0.5, 1.0, 1.0],
+            ],
+        ]
+    ).astype("float32")
+
+    scores = np.array(
+        [
+            [[0.1, 0.2, 0.6, 0.3, 0.9], [0.1, 0.2, 0.6, 0.3, 0.9]],
+            [[0.1, 0.2, 0.6, 0.3, 0.9], [0.1, 0.2, 0.6, 0.3, 0.9]],
+        ]
+    ).astype("float32")
+    max_output_boxes_per_class = np.array(2).astype("int64")
+    iou_threshold = np.array(0.8).astype("float32")
+    score_threshold = np.array(0.2).astype("float32")
+
+    verify_all_class_non_max_suppression(boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold)
+
+
 if __name__ == "__main__":
-    test_get_valid_counts()
-    test_multibox_prior()
-    test_multibox_detection()
-    test_roi_align()
-    test_roi_pool()
-    test_proposal()
-    test_non_max_suppression()
+    # test_get_valid_counts()
+    # test_multibox_prior()
+    # test_multibox_detection()
+    # test_roi_align()
+    # test_roi_pool()
+    # test_proposal()
+    # test_non_max_suppression()
+    test_all_class_non_max_suppression()
