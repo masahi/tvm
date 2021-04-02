@@ -86,6 +86,7 @@ def exclusive_scan_ir(data, output, reduction=None, binop=tvm.tir.generic.add, i
         with ib.new_scope():
             nthread_tx = max_threads
             nthread_bx = ceil_div(scan_axis_size, max_threads)
+            # TODO
             nthread_by = batch_size
             tx = te.thread_axis("threadIdx.x")
             bx = te.thread_axis("blockIdx.x")
@@ -99,6 +100,7 @@ def exclusive_scan_ir(data, output, reduction=None, binop=tvm.tir.generic.add, i
 
         nthread_tx = max_threads
         nthread_bx = ceil_div(scan_axis_size, max_threads)
+        # TODO
         nthread_by = batch_size
 
         # The following algorithm performs parallel exclusive scan
