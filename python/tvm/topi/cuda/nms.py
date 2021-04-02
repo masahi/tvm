@@ -312,6 +312,7 @@ def _nms_loop(
     sorted_index,
     return_indices,
     get_max_output_size_func,
+    on_new_valid_box_func,
     id_index,
     top_k,
     iou_threshold,
@@ -350,13 +351,7 @@ def _nms_loop(
 
         def nms_inner_loop(ib, i, j, nkeep):
             # The box j is valid, invalidate other boxes that overlap with j above iou_threshold
-
-            # When return_indices is False, no need to populate box_indices
-            if return_indices:
-                with ib.if_scope(tx + 0 == 0):
-                    orig_idx = sorted_index[i * num_anchors + j]
-                    box_indices[i, num_valid_boxes_local[0]] = indices[i, orig_idx]
-
+            on_new_valid_box_func(ib, tx, num_valid_boxes_local[0], i, j)
             num_valid_boxes_local[0] += 1
 
             num_iter_per_thread = ceil_div(nkeep - (j + 1), nthread_tx)
@@ -607,6 +602,9 @@ def nms_ir(
 
                 box_indices[i * num_anchors + j] = j
 
+    if isinstance(max_output_size, int):
+        max_output_size = tvm.tir.const(max_output_size)
+
     def calc_overlap(i, j, k):
         offset_j = j * 4
         offset_k = k * 4
@@ -617,14 +615,19 @@ def nms_ir(
             base_bbox_idx + offset_k,
         )
 
-    if isinstance(max_output_size, int):
-        max_output_size = tvm.tir.const(max_output_size)
+    def on_new_valid_box(ib, tid, num_current_valid_box, i, j):
+        # When return_indices is False, no need to populate box_indices
+        if return_indices:
+            with ib.if_scope(tid + 0 == 0):
+                orig_idx = sorted_index[i * num_anchors + j]
+                box_indices[i, num_current_valid_box] = indices[i, orig_idx]
 
     return _nms_loop(
         ib, batch_size, num_anchors,
         sorted_index,
         return_indices,
         lambda _: max_output_size,
+        on_new_valid_box,
         id_index,
         top_k,
         iou_threshold,
