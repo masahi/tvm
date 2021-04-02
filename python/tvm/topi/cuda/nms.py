@@ -962,37 +962,6 @@ def non_max_suppression(
     )
 
 
-def compact_nonzero_indices_ir(scores_threshold_flags, write_indices, out):
-    batch_classes, num_boxes = scores_threshold_flags.shape
-
-    ib = tvm.tir.ir_builder.create()
-
-    scores_threshold_flags = ib.buffer_ptr(scores_threshold_flags)
-    write_indices = ib.buffer_ptr(write_indices)
-    out = ib.buffer_ptr(out)
-
-    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
-    nthread_tx = max_threads
-    nthread_ty = max_threads
-    nthread_bx = ceil_div(num_boxes, nthread_tx)
-    nthread_by = ceil_div(batch_classes, nthread_ty)
-    tx = te.thread_axis("threadIdx.x")
-    ty = te.thread_axis("threadIdx.y")
-    bx = te.thread_axis("blockIdx.x")
-    by = te.thread_axis("blockIdx.y")
-    ib.scope_attr(tx, "thread_extent", nthread_tx)
-    ib.scope_attr(ty, "thread_extent", nthread_ty)
-    ib.scope_attr(bx, "thread_extent", nthread_bx)
-    ib.scope_attr(by, "thread_extent", nthread_by)
-
-    with ib.new_scope():
-        idx = bx * nthread_tx + tx
-        idy = by * nthread_ty + ty
-        with ib.if_scope(tvm.tir.all(idy < batch_classes, idx < num_boxes)):
-            with ib.if_scope(scores_threshold_flags[idy, idx] != 0):
-                out[idy, write_indices[idy, idx]] = idx
-
-    return ib.get()
 
 
 def _get_valid_box_count(scores, score_threshold):
@@ -1046,6 +1015,76 @@ def _get_valid_box_count(scores, score_threshold):
     )
 
 
+def _run_all_class_nms(boxes, sorted_scores, sorted_indices, valid_count):
+    batch, num_boxes, _ = boxes.shape
+    num_class = sorted_scores.shape[0] // batch
+
+    return None, None
+
+
+def _collect_selected_indices_ir(num_class, selected_indices, num_detections, row_offsets, out):
+    batch_classes, num_boxes = selected_indices.shape
+
+    ib = tvm.tir.ir_builder.create()
+
+    selected_indices = ib.buffer_ptr(selected_indices)
+    num_detections = ib.buffer_ptr(num_detections)
+    row_offsets = ib.buffer_ptr(row_offsets)
+    out = ib.buffer_ptr(out)
+
+    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+    nthread_tx = max_threads
+    nthread_ty = max_threads
+    nthread_bx = ceil_div(num_boxes, nthread_tx)
+    nthread_by = ceil_div(batch_classes, nthread_ty)
+    tx = te.thread_axis("threadIdx.x")
+    ty = te.thread_axis("threadIdx.y")
+    bx = te.thread_axis("blockIdx.x")
+    by = te.thread_axis("blockIdx.y")
+    ib.scope_attr(tx, "thread_extent", nthread_tx)
+    ib.scope_attr(ty, "thread_extent", nthread_ty)
+    ib.scope_attr(bx, "thread_extent", nthread_bx)
+    ib.scope_attr(by, "thread_extent", nthread_by)
+
+    with ib.new_scope():
+        idx = bx * nthread_tx + tx
+        idy = by * nthread_ty + ty
+        batch_id = idy // num_class
+        class_id = idy % num_class
+        with ib.if_scope(tvm.tir.all(idy < batch_classes, idx < num_boxes)):
+            with ib.if_scope(idx < num_detections[idy]):
+                out[row_offsets[idy] + idx, 0] = batch_id
+                out[row_offsets[idy] + idx, 1] = class_id
+                out[row_offsets[idy] + idx, 2] = idx
+
+    return ib.get()
+
+
+def _collect_selected_indices(num_class, selected_indices, num_detections, row_offsets):
+    batch_class, num_boxes = selected_indices.shape
+
+    selected_indices_buf = tvm.tir.decl_buffer(
+        selected_indices.shape, selected_indices.dtype, "selected_indices_buf", data_alignment=8
+    )
+    num_detections_buf = tvm.tir.decl_buffer(
+        num_detections.shape, num_detections.dtype, "num_detections_buf", data_alignment=8
+    )
+    row_offsets_buf = tvm.tir.decl_buffer(
+        row_offsets.shape, row_offsets.dtype, "row_offsets_buf", data_alignment=8
+    )
+    out_shape = (batch_class * num_boxes, 3)
+
+    return te.extern(
+        [out_shape],
+        [selected_indices, num_detections_buf, row_offsets_buf],
+        lambda ins, outs: _collect_selected_indices_ir(num_class, ins[0], ins[1], ins[2], outs[0]),
+        dtype=["int32"],
+        in_buffers=[selected_indices_buf, num_detections_buf, row_offsets_buf],
+        name="collect_indices",
+        tag="collect_indices",
+    )
+
+
 def all_class_non_max_suppression(
     boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold
 ):
@@ -1054,3 +1093,10 @@ def all_class_non_max_suppression(
     scores = reshape(scores, (batch * num_class, num_boxes))
     sorted_scores, sorted_indices = _dispatch_sort(scores, ret_type="both")
     valid_count = _get_valid_box_count(sorted_scores, score_threshold)
+
+    selected_indices, num_detections = _run_all_class_nms(boxes, sorted_scores, sorted_indices, valid_count)
+
+    row_offsets, num_total_detections = exclusive_scan(num_detections, return_reduction=True)
+
+    selected_indices = _collect_selected_indices(num_class, selected_indices, num_detections, row_offsets)
+    return selected_indices, num_total_detections
