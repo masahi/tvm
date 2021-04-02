@@ -949,27 +949,55 @@ def compact_nonzero_indices_ir(scores_threshold_flags, write_indices, out):
     return ib.get()
 
 
-def _get_valid_box_indices(scores, score_threshold):
-    batch, num_class, num_boxes = scores.shape
-    flags = cast(greater(scores, tvm.tir.const(score_threshold)), dtype="int32")
-    write_indices, valid_count = exclusive_scan(flags, return_reduction=True, axis=1)
+def _get_valid_box_count(scores, score_threshold):
+    batch_classes, num_boxes = scores.shape
 
-    flags_buf = tvm.tir.decl_buffer(flags.shape, flags.dtype, "flags_buf", data_alignment=8)
-    write_indices_buf = tvm.tir.decl_buffer(
-        write_indices.shape, write_indices.dtype, "write_indices_buf", data_alignment=8
-    )
+    def binary_search(ib, y, out):
+        lo = ib.allocate("int32", (1,), name="lo", scope="local")
+        hi = ib.allocate("int32", (1,), name="hi", scope="local")
 
-    valid_box_indices = te.extern(
-        [(batch * num_class, num_boxes)],
-        [flags, write_indices],
-        lambda ins, outs: compact_nonzero_indices_ir(ins[0], ins[1], outs[0]),
+        lo[0] = 0
+        hi[0] = num_boxes
+
+        with ib.while_loop(lo[0] < hi[0]):
+            mid = hi[0] + lo[0] >> 1
+            with ib.if_scope(scores[y, mid] > score_threshold):
+                lo[0] = mid + 1
+            with ib.else_scope():
+                hi[0] = mid
+
+        out[y] = lo[0]
+
+    def searchsorted_ir(scores, valid_count):
+        ib = tvm.tir.ir_builder.create()
+        scores = ib.buffer_ptr(scores)
+        valid_count = ib.buffer_ptr(valid_count)
+
+        bx = te.thread_axis("blockIdx.x")
+        tx = te.thread_axis("threadIdx.x")
+        max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+
+        with ib.new_scope():
+            ib.scope_attr(bx, "thread_extent", ceil_div(batch_classes, max_threads))
+            ib.scope_attr(tx, "thread_extent", max_threads)
+            tid = bx * max_threads + tx
+
+            with ib.if_scope(tid < batch_classes):
+                binary_search(ib, tid, valid_count)
+
+        return ib.get()
+
+    scores_buf = tvm.tir.decl_buffer(scores.shape, scores.dtype, "scores_buf", data_alignment=8)
+
+    return te.extern(
+        [(batch_classes,)],
+        [scores_buf],
+        lambda ins, outs: searchsorted_ir(ins[0], outs[0]),
         dtype=["int32"],
-        in_buffers=[flags_buf, write_indices_buf],
-        name="get_valid_box",
-        tag="get_valid_box",
+        in_buffers=[scores_buf],
+        name="searchsorted",
+        tag="searchsorted",
     )
-
-    return valid_box_indices, valid_count
 
 
 def all_class_non_max_suppression(
@@ -979,4 +1007,4 @@ def all_class_non_max_suppression(
 
     scores = reshape(scores, (batch * num_class, num_boxes))
     sorted_scores, sorted_indices = _dispatch_sort(scores, ret_type="both")
-    valid_box_indices, valid_count = _get_valid_box_indices(scores, score_threshold)
+    valid_count = _get_valid_box_count(sorted_scores, score_threshold)
