@@ -308,21 +308,17 @@ def calculate_overlap(out_tensor, box_a_idx, box_b_idx):
 
 def _nms_loop(
     ib,
-    batch_size, num_anchors,
-    sorted_index,
-    return_indices,
-    get_max_output_size_func,
-    on_new_valid_box_func,
-    id_index,
+    batch_size,
+    num_anchors,
     top_k,
     iou_threshold,
-    force_suppress,
     valid_count,
-    indices,
+    get_max_output_size_func,
+    on_new_valid_box_func,
+    on_new_invalidated_box_func,
+    needs_bbox_check_func,
     calc_overlap_func,
     out_scores,
-    out_class_ids,
-    box_indices,
     num_valid_boxes,
 ):
     max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
@@ -363,11 +359,7 @@ def _nms_loop(
                     tvm.tir.all(
                         k < nkeep,
                         out_scores[i, k] > 0,  # is the box k still valid?
-                        tvm.tir.any(
-                            force_suppress > 0,
-                            id_index < 0,
-                            out_class_ids[i, k] == out_class_ids[i, j],
-                        ),
+                        needs_bbox_check_func(i, j, k),
                     )
                 ):
                     iou = calc_overlap_func(i, j, k)
@@ -375,9 +367,7 @@ def _nms_loop(
                     with ib.if_scope(iou >= iou_threshold):
                         # invalidate the box k
                         out_scores[i, k] = -1.0
-
-                        if return_indices is False and id_index >= 0:
-                            out_class_ids[i, k] = -1.0
+                        on_new_invalidated_box_func(i, k)
 
                 ib.emit(tvm.tir.Call(None, "tir.tvm_storage_sync", tvm.runtime.convert(["shared"])))
 
@@ -622,22 +612,30 @@ def nms_ir(
                 orig_idx = sorted_index[i * num_anchors + j]
                 box_indices[i, num_current_valid_box] = indices[i, orig_idx]
 
+    def on_new_invalidated_box(i, k):
+        if return_indices is False and id_index >= 0:
+            out_class_ids[i, k] = -1.0
+
+    def needs_bbox_check(i, j, k):
+        return tvm.tir.any(
+            force_suppress > 0,
+            id_index < 0,
+            out_class_ids[i, k] == out_class_ids[i, j],
+        )
+
     return _nms_loop(
-        ib, batch_size, num_anchors,
-        sorted_index,
-        return_indices,
-        lambda _: max_output_size,
-        on_new_valid_box,
-        id_index,
+        ib,
+        batch_size,
+        num_anchors,
         top_k,
         iou_threshold,
-        force_suppress,
         valid_count,
-        indices,
+        lambda _: max_output_size,
+        on_new_valid_box,
+        on_new_invalidated_box,
+        needs_bbox_check,
         calc_overlap,
         out_scores,
-        out_class_ids,
-        box_indices,
         num_valid_boxes,
     )
 
@@ -962,8 +960,6 @@ def non_max_suppression(
     )
 
 
-
-
 def _get_valid_box_count(scores, score_threshold):
     batch_classes, num_boxes = scores.shape
 
@@ -1094,9 +1090,13 @@ def all_class_non_max_suppression(
     sorted_scores, sorted_indices = _dispatch_sort(scores, ret_type="both")
     valid_count = _get_valid_box_count(sorted_scores, score_threshold)
 
-    selected_indices, num_detections = _run_all_class_nms(boxes, sorted_scores, sorted_indices, valid_count)
+    selected_indices, num_detections = _run_all_class_nms(
+        boxes, sorted_scores, sorted_indices, valid_count
+    )
 
     row_offsets, num_total_detections = exclusive_scan(num_detections, return_reduction=True)
 
-    selected_indices = _collect_selected_indices(num_class, selected_indices, num_detections, row_offsets)
+    selected_indices = _collect_selected_indices(
+        num_class, selected_indices, num_detections, row_offsets
+    )
     return selected_indices, num_total_detections
