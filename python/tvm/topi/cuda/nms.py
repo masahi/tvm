@@ -25,6 +25,9 @@ from tvm.tir import if_then_else
 from .sort import argsort, argsort_thrust
 from .scan import exclusive_scan
 from ..utils import ceil_div
+from ..math import cast
+from ..transform import reshape
+from ..broadcast import greater
 
 
 def cuda_atomic_add_rule(op):
@@ -909,4 +912,73 @@ def non_max_suppression(
         coord_start,
         score_index,
         id_index,
+    )
+
+
+def compact_nonzero_indices_ir(scores_threshold_flags, write_indices, out):
+    batch_classes, num_boxes = scores_threshold_flags.shape
+
+    ib = tvm.tir.ir_builder.create()
+
+    scores_threshold_flags = ib.buffer_ptr(scores_threshold_flags)
+    write_indices = ib.buffer_ptr(write_indices)
+    out = ib.buffer_ptr(out)
+
+    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+    nthread_tx = max_threads
+    nthread_ty = max_threads
+    nthread_bx = ceil_div(num_boxes, nthread_tx)
+    nthread_by = ceil_div(batch_classes, nthread_ty)
+    tx = te.thread_axis("threadIdx.x")
+    ty = te.thread_axis("threadIdx.y")
+    bx = te.thread_axis("blockIdx.x")
+    by = te.thread_axis("blockIdx.y")
+    ib.scope_attr(tx, "thread_extent", nthread_tx)
+    ib.scope_attr(ty, "thread_extent", nthread_ty)
+    ib.scope_attr(bx, "thread_extent", nthread_bx)
+    ib.scope_attr(by, "thread_extent", nthread_by)
+
+    with ib.new_scope():
+        idx = bx * nthread_tx + tx
+        idy = by * nthread_ty + ty
+        with ib.if_scope(tvm.tir.all(idy < batch_classes, idx < num_boxes)):
+            with ib.if_scope(scores_threshold_flags[idy, idx] != 0):
+                out[idy, write_indices[idy, idx]] = idx
+
+    return ib.get()
+
+
+def all_class_non_max_suppression(
+    boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold
+):
+    batch, num_boxes, _ = boxes.shape
+    _, num_class, _ = scores.shape
+
+    scores = reshape(scores, (batch * num_class, num_boxes))
+
+    target = tvm.target.Target.current()
+    if target and (
+        can_use_thrust(target, "tvm.contrib.thrust.sort")
+        or can_use_rocthrust(target, "tvm.contrib.thrust.sort")
+    ):
+        sorted_indices = argsort_thrust(scores, axis=1, is_ascend=False, dtype="int32")
+    else:
+        sorted_indices = argsort(scores, axis=1, is_ascend=False, dtype="int32")
+
+    flags = cast(greater(scores, tvm.tir.const(score_threshold)), dtype="int32")
+    write_indices, valid_count = exclusive_scan(flags, return_reduction=True)
+
+    flags_buf = tvm.tir.decl_buffer(flags.shape, flags.dtype, "flags_buf", data_alignment=8)
+    write_indices_buf = tvm.tir.decl_buffer(
+        write_indices.shape, write_indices.dtype, "write_indices_buf", data_alignment=8
+    )
+
+    valid_box_indices = te.extern(
+        [(batch * num_class, num_boxes)],
+        [flags, write_indices],
+        lambda ins, outs: compact_nonzero_indices_ir(ins[0], ins[1], outs[0]),
+        dtype=["int32"],
+        in_buffers=[flags_buf, write_indices_buf],
+        name="get_valid_box",
+        tag="get_valid_box",
     )

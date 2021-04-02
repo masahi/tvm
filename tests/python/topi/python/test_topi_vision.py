@@ -646,11 +646,7 @@ def verify_all_class_non_max_suppression(
         with tvm.target.Target(target):
             fcompute, fschedule = tvm.topi.testing.dispatch(target, _all_class_nms_implement)
             out = fcompute(
-                boxes,
-                scores,
-                max_output_boxes_per_class,
-                iou_threshold,
-                score_threshold
+                boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold
             )
             s = fschedule(out)
 
@@ -698,7 +694,9 @@ def test_all_class_non_max_suppression():
     iou_threshold = np.array(0.8).astype("float32")
     score_threshold = np.array(0.2).astype("float32")
 
-    verify_all_class_non_max_suppression(boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold)
+    verify_all_class_non_max_suppression(
+        boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold
+    )
 
 
 if __name__ == "__main__":
