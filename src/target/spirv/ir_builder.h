@@ -60,7 +60,8 @@ enum ValueKind {
   kStructArrayPtr,
   kPushConstantPtr,
   kFunction,
-  kExtInst
+  kExtInst,
+  kUniformPtr
 };
 
 /*! \brief Represent the SPIRV Value */
@@ -473,6 +474,7 @@ class IRBuilder {
    * \param The argument type.
    */
   Value BufferArgument(const SType& value_type, uint32_t descriptor_set, uint32_t binding);
+
   /*!
    * \brief Declare POD arguments through push constants.
    *
@@ -488,6 +490,10 @@ class IRBuilder {
    * \return the value of push constant
    */
   Value GetPushConstant(Value ptr_push_const, const SType& v_type, uint32_t index);
+
+  // TODO(masahi): doc
+  Value DeclareUniformBuffer(const std::vector<SType>& value_types, uint32_t binding);
+  Value GetUniform(Value ptr_ubo, const SType& v_type, uint32_t index);
   /*!
    * \brief Declare a new function
    * \return The created function ID.
@@ -555,6 +561,11 @@ class IRBuilder {
     val.flag = flag;
     return val;
   }
+
+  // TOOD doc
+  Value DeclareStorageVariable(const std::vector<SType>& value_types,
+                               spv::StorageClass storage_class, ValueKind kind);
+
   // get constant given value encoded in uint64_t
   Value GetConst_(const SType& dtype, const uint64_t* pvalue);
   // declare type
