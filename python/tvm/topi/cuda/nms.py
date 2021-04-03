@@ -26,7 +26,7 @@ from .sort import argsort, argsort_thrust
 from .scan import exclusive_scan
 from ..utils import ceil_div
 from ..math import cast
-from ..transform import reshape
+from ..transform import reshape, expand_dims
 from ..broadcast import greater
 
 
@@ -390,11 +390,11 @@ def _nms_loop(
                         nms_inner_loop(ib, i, box_idx[0], nkeep)
                     box_idx[0] += 1
 
-            with ib.else_scope():
-                with ib.for_range(0, nkeep, name="j") as j:
-                    # Proceed to the inner loop if the box j is still valid
-                    with ib.if_scope(out_scores[i, j] > -1.0):
-                        nms_inner_loop(ib, i, j, nkeep)
+            # with ib.else_scope():
+            #     with ib.for_range(0, nkeep, name="j") as j:
+            #         # Proceed to the inner loop if the box j is still valid
+            #         with ib.if_scope(out_scores[i, j] > -1.0):
+            #             nms_inner_loop(ib, i, j, nkeep)
 
             with ib.if_scope(tx + 0 == 0):
                 num_valid_boxes[i] = num_valid_boxes_local[0]
@@ -964,6 +964,8 @@ def _get_valid_box_count(scores, score_threshold):
     batch_classes, num_boxes = scores.shape
 
     def binary_search(ib, y, out):
+        out[y] = num_boxes
+        return
         lo = ib.allocate("int32", (1,), name="lo", scope="local")
         hi = ib.allocate("int32", (1,), name="hi", scope="local")
 
@@ -1032,10 +1034,17 @@ def _all_class_nms_ir(
     box_indices = ib.buffer_ptr(box_indices)
     num_valid_boxes = ib.buffer_ptr(num_valid_boxes)
 
+    if isinstance(iou_threshold, float):
+        iou_threshold = tvm.tir.FloatImm("float32", iou_threshold)
+
+    if isinstance(max_output_size_per_class, int):
+        max_output_size_per_class = tvm.tir.const(max_output_size_per_class)
+
     def calc_overlap(i, j, k):
-        offset_j = sorted_indices[j] * 4
-        offset_k = sorted_indices[k] * 4
-        base_bbox_idx = i * num_anchors * 4
+        offset_j = sorted_indices[i, j] * 4
+        offset_k = sorted_indices[i, k] * 4
+        batch_id = i // num_class
+        base_bbox_idx = batch_id * num_anchors * 4
         return calculate_overlap(
             boxes,
             base_bbox_idx + offset_j,
@@ -1044,7 +1053,7 @@ def _all_class_nms_ir(
 
     def on_new_valid_box(ib, tid, num_current_valid_box, i, j):
         with ib.if_scope(tid + 0 == 0):
-            box_indices[i, num_current_valid_box] = sorted_indices[i * num_anchors + j]
+            box_indices[i, num_current_valid_box] = sorted_indices[i, j]
 
     def max_output_size(batch_class_index):
         return max_output_size_per_class
@@ -1054,11 +1063,6 @@ def _all_class_nms_ir(
 
     def needs_bbox_check(i, j, k):
         return tvm.tir.const(True)
-
-    if isinstance(iou_threshold, float):
-        iou_threshold = tvm.tir.FloatImm("float32", iou_threshold)
-    if isinstance(max_output_size, int):
-        max_output_size = tvm.tir.const(max_output_size)
 
     return _nms_loop(
         ib,
@@ -1135,28 +1139,24 @@ def _collect_selected_indices_ir(num_class, selected_indices, num_detections, ro
 
     max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
     nthread_tx = max_threads
-    nthread_ty = max_threads
     nthread_bx = ceil_div(num_boxes, nthread_tx)
-    nthread_by = ceil_div(batch_classes, nthread_ty)
+    nthread_by = batch_classes
     tx = te.thread_axis("threadIdx.x")
-    ty = te.thread_axis("threadIdx.y")
     bx = te.thread_axis("blockIdx.x")
     by = te.thread_axis("blockIdx.y")
     ib.scope_attr(tx, "thread_extent", nthread_tx)
-    ib.scope_attr(ty, "thread_extent", nthread_ty)
     ib.scope_attr(bx, "thread_extent", nthread_bx)
     ib.scope_attr(by, "thread_extent", nthread_by)
 
     with ib.new_scope():
         idx = bx * nthread_tx + tx
-        idy = by * nthread_ty + ty
+        idy = by
         batch_id = idy // num_class
         class_id = idy % num_class
-        with ib.if_scope(tvm.tir.all(idy < batch_classes, idx < num_boxes)):
-            with ib.if_scope(idx < num_detections[idy]):
-                out[row_offsets[idy] + idx, 0] = batch_id
-                out[row_offsets[idy] + idx, 1] = class_id
-                out[row_offsets[idy] + idx, 2] = idx
+        with ib.if_scope(idx < num_detections[idy]):
+            out[row_offsets[idy] + idx, 0] = batch_id
+            out[row_offsets[idy] + idx, 1] = class_id
+            out[row_offsets[idy] + idx, 2] = selected_indices[idy, idx]
 
     return ib.get()
 
@@ -1197,11 +1197,12 @@ def all_class_non_max_suppression(
     selected_indices, num_detections = _run_all_class_nms(
         boxes, sorted_scores, sorted_indices, valid_count, max_output_boxes_per_class, iou_threshold
     )
-    return selected_indices, num_detections
+    num_detections = expand_dims(num_detections, axis=0)
 
-    # row_offsets, num_total_detections = exclusive_scan(num_detections, return_reduction=True)
+    row_offsets, num_total_detections = exclusive_scan(num_detections, return_reduction=True)
 
-    # selected_indices = _collect_selected_indices(
-    #     num_class, selected_indices, num_detections, row_offsets
-    # )
-    # return selected_indices, num_total_detections
+    selected_indices = _collect_selected_indices(
+        num_class, selected_indices, num_detections, row_offsets
+    )
+
+    return selected_indices, num_total_detections, sorted_scores

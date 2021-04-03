@@ -651,14 +651,18 @@ def verify_all_class_non_max_suppression(
 
         tvm_boxes = tvm.nd.array(boxes_np, dev)
         tvm_scores = tvm.nd.array(scores_np, dev)
-        selected_indices = tvm.nd.array(np.zeros((batch * num_class * num_boxes, 3), "int32"))
-        num_detections = tvm.nd.array(np.zeros((1,), "int32"))
+        selected_indices = tvm.nd.array(np.zeros((batch * num_class * num_boxes, 3), "int32"), dev)
+        num_detections = tvm.nd.array(np.zeros((1,), "int32"), dev)
+        sorted_scores = tvm.nd.array(np.zeros((batch * num_class, num_boxes), "float32"), dev)
 
-        f = tvm.build(s, [boxes, scores, out[0], out[1]], target)
-        #f(tvm_boxes, tvm_scores, selected_indices, num_detections)
+        f = tvm.build(s, [boxes, scores, out[0], out[1], out[2]], target)
+        f(tvm_boxes, tvm_scores, selected_indices, num_detections, sorted_scores)
+        print(selected_indices.asnumpy())
+        print(num_detections.asnumpy())
+        print(sorted_scores.asnumpy())
         # tvm.testing.assert_allclose(tvm_indices_out.asnumpy(), np_indices_result, rtol=1e-4)
 
-    for target in ["vulkan"]:
+    for target in ["cuda"]:
         check_device(target)
 
 
@@ -689,9 +693,10 @@ def test_all_class_non_max_suppression():
             [[0.1, 0.2, 0.6, 0.3, 0.9], [0.1, 0.2, 0.6, 0.3, 0.9]],
         ]
     ).astype("float32")
+    print(scores.shape)
     max_output_boxes_per_class = 2
     iou_threshold = 0.8
-    score_threshold = 0.2
+    score_threshold = -1.0
 
     verify_all_class_non_max_suppression(
         boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold
