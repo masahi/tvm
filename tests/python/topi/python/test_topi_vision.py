@@ -659,7 +659,7 @@ def verify_all_class_non_max_suppression(
         print(selected_indices.asnumpy()[:num_detections.asnumpy()[0]])
         # tvm.testing.assert_allclose(tvm_indices_out.asnumpy(), np_indices_result, rtol=1e-4)
 
-    for target in ["cuda"]:
+    for target in ["vulkan"]:
         check_device(target)
 
 
@@ -693,7 +693,7 @@ def test_all_class_non_max_suppression():
 
     max_output_boxes_per_class = 2
     iou_threshold = 0.8
-    score_threshold = 0.0
+    score_threshold = 0.2
 
     verify_all_class_non_max_suppression(
         boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold

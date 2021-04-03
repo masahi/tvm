@@ -390,11 +390,11 @@ def _nms_loop(
                         nms_inner_loop(ib, i, box_idx[0], nkeep)
                     box_idx[0] += 1
 
-            # with ib.else_scope():
-            #     with ib.for_range(0, nkeep, name="j") as j:
-            #         # Proceed to the inner loop if the box j is still valid
-            #         with ib.if_scope(out_scores[i, j] > -1.0):
-            #             nms_inner_loop(ib, i, j, nkeep)
+            with ib.else_scope():
+                with ib.for_range(0, nkeep, name="j") as j:
+                    # Proceed to the inner loop if the box j is still valid
+                    with ib.if_scope(out_scores[i, j] > -1.0):
+                        nms_inner_loop(ib, i, j, nkeep)
 
             with ib.if_scope(tx + 0 == 0):
                 num_valid_boxes[i] = num_valid_boxes_local[0]
