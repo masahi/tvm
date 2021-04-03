@@ -1057,6 +1057,8 @@ def _all_class_nms_ir(
 
     if isinstance(iou_threshold, float):
         iou_threshold = tvm.tir.FloatImm("float32", iou_threshold)
+    if isinstance(max_output_size, int):
+        max_output_size = tvm.tir.const(max_output_size)
 
     return _nms_loop(
         ib,
@@ -1195,10 +1197,11 @@ def all_class_non_max_suppression(
     selected_indices, num_detections = _run_all_class_nms(
         boxes, sorted_scores, sorted_indices, valid_count, max_output_boxes_per_class, iou_threshold
     )
+    return selected_indices, num_detections
 
-    row_offsets, num_total_detections = exclusive_scan(num_detections, return_reduction=True)
+    # row_offsets, num_total_detections = exclusive_scan(num_detections, return_reduction=True)
 
-    selected_indices = _collect_selected_indices(
-        num_class, selected_indices, num_detections, row_offsets
-    )
-    return selected_indices, num_total_detections
+    # selected_indices = _collect_selected_indices(
+    #     num_class, selected_indices, num_detections, row_offsets
+    # )
+    # return selected_indices, num_total_detections
