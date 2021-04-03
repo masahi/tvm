@@ -964,8 +964,6 @@ def _get_valid_box_count(scores, score_threshold):
     batch_classes, num_boxes = scores.shape
 
     def binary_search(ib, y, out):
-        out[y] = num_boxes
-        return
         lo = ib.allocate("int32", (1,), name="lo", scope="local")
         hi = ib.allocate("int32", (1,), name="hi", scope="local")
 
