@@ -1011,114 +1011,97 @@ def _get_valid_box_count(scores, score_threshold):
     )
 
 
-def _all_class_nms_ir():
-    pass
-    # def calc_overlap(i, j, k):
-    #     offset_j = j * 4
-    #     offset_k = k * 4
-    #     base_bbox_idx = i * num_anchors * 4
-    #     return calculate_overlap(
-    #         out_bboxes,
-    #         base_bbox_idx + offset_j,
-    #         base_bbox_idx + offset_k,
-    #     )
+def _all_class_nms_ir(
+    boxes,
+    sorted_scores,
+    sorted_indices,
+    valid_count,
+    max_output_size_per_class,
+    batch_class,
+    num_class,
+    num_anchors,
+    iou_threshold,
+    box_indices,
+    num_valid_boxes,
+):
+    def calc_overlap(i, j, k):
+        offset_j = sorted_indices[j] * 4
+        offset_k = sorted_indices[k] * 4
+        base_bbox_idx = i * num_anchors * 4
+        return calculate_overlap(
+            boxes,
+            base_bbox_idx + offset_j,
+            base_bbox_idx + offset_k,
+        )
 
-    # def on_new_valid_box(ib, tid, num_current_valid_box, i, j):
-    #     # When return_indices is False, no need to populate box_indices
-    #     if return_indices:
-    #         with ib.if_scope(tid + 0 == 0):
-    #             orig_idx = sorted_index[i * num_anchors + j]
-    #             box_indices[i, num_current_valid_box] = indices[i, orig_idx]
+    def on_new_valid_box(ib, tid, num_current_valid_box, i, j):
+        with ib.if_scope(tid + 0 == 0):
+            box_indices[i, num_current_valid_box] = sorted_indices[i * num_anchors + j]
 
-    # def on_new_invalidated_box(i, k):
-    #     if return_indices is False and id_index >= 0:
-    #         out_class_ids[i, k] = -1.0
+    def max_output_size(batch_class_index):
+        class_id = batch_class_index % num_class
+        return max_output_size_per_class[class_id]
 
-    # def needs_bbox_check(i, j, k):
-    #     return tvm.tir.any(
-    #         force_suppress > 0,
-    #         id_index < 0,
-    #         out_class_ids[i, k] == out_class_ids[i, j],
-    #     )
+    def on_new_invalidated_box(i, k):
+        pass
 
-    # return _nms_loop(
-    #     ib,
-    #     batch_size,
-    #     num_anchors,
-    #     top_k,
-    #     iou_threshold,
-    #     valid_count,
-    #     lambda _: max_output_size,
-    #     on_new_valid_box,
-    #     on_new_invalidated_box,
-    #     needs_bbox_check,
-    #     calc_overlap,
-    #     out_scores,
-    #     num_valid_boxes,
-    # )
+    def needs_bbox_check(i, j, k):
+        return True
+
+    ib = tvm.tir.ir_builder.create()
+    return _nms_loop(
+        ib,
+        batch_class,
+        num_anchors,
+        -1,  # top_k
+        iou_threshold,
+        valid_count,
+        max_output_size,
+        on_new_valid_box,
+        on_new_invalidated_box,
+        needs_bbox_check,
+        calc_overlap,
+        sorted_scores,
+        num_valid_boxes,
+    )
 
 
-def _run_all_class_nms(boxes, sorted_scores, sorted_indices, valid_count):
+def _run_all_class_nms(boxes, sorted_scores, sorted_indices, valid_count, iou_threshold):
     batch, num_boxes, _ = boxes.shape
-    num_class = sorted_scores.shape[0] // batch
+    batch_class = sorted_scores.shape[0]
+    num_class = batch_class // batch
 
-    sort_tensor_buf = tvm.tir.decl_buffer(
-        sort_tensor.shape, sort_tensor.dtype, "sort_tensor_buf", data_alignment=8
+    boxes_buf = tvm.tir.decl_buffer(boxes.shape, boxes.dtype, "boxes_buf", data_alignment=8)
+    sorted_scores_buf = tvm.tir.decl_buffer(
+        sorted_scores.shape, sorted_scores.dtype, "sorted_scores_buf", data_alignment=8
     )
-
-    valid_count_dtype = "int32"
+    sorted_indices_buf = tvm.tir.decl_buffer(
+        sorted_indices.shape, sorted_indices.dtype, "sorted_indices_buf", data_alignment=8
+    )
     valid_count_buf = tvm.tir.decl_buffer(
-        valid_count.shape, valid_count_dtype, "valid_count_buf", data_alignment=4
+        valid_count.shape, "int32", "valid_count_buf", data_alignment=4
     )
-    indices_buf = tvm.tir.decl_buffer(indices.shape, indices.dtype, "indices_buf", data_alignment=8)
-
-    batch_size = data.shape[0]
-    num_anchors = data.shape[1]
-    # Number of extra features per box beyond coords, score, and id.
-    num_features = data.shape[2] - 6 if id_index >= 0 else data.shape[2] - 5
-
-    # output shapes
-    bbox_shape = (batch_size, num_anchors, 4)
-    score_shape = (batch_size, num_anchors)
-    class_id_shape = score_shape
-    out_features_shape = (batch_size, num_anchors, num_features)
-    box_indices_shape = score_shape
-    num_valid_boxes_shape = (batch_size, 1)
 
     return te.extern(
-        [
-            bbox_shape,
-            score_shape,
-            class_id_shape,
-            out_features_shape,
-            box_indices_shape,
-            num_valid_boxes_shape,
-        ],
-        [data, sort_tensor, valid_count, indices],
+        [(batch_class, num_boxes), (batch_class,)],
+        [boxes, sorted_scores, sorted_indices, valid_count],
         lambda ins, outs: _all_class_nms_ir(
-            ins[0],
-            ins[1],
-            ins[2],
-            ins[3],
-            outs[0],  # sorted bbox
-            outs[1],  # sorted scores
-            outs[2],  # sorted class ids
-            outs[3],  # sorted box feats
-            outs[4],  # box_indices
-            outs[5],  # num_valid_boxes
-            max_output_size,
+            ins[0],  # boxes
+            ins[1],  # sorted_scores
+            ins[2],  # sorted_indices
+            ins[3],  # valid_count
+            ins[4],  # max_output_size_per_class
+            batch_class,
+            num_class,
+            num_boxes,
             iou_threshold,
-            force_suppress,
-            top_k,
-            coord_start,
-            id_index,
-            score_index,
-            return_indices,
+            outs[0],  # box_indices
+            outs[1],  # num_valid_boxes
         ),
-        dtype=[data.dtype, "float32", "float32", "float32", "int32", "int32"],
-        in_buffers=[data_buf, sort_tensor_buf, valid_count_buf, indices_buf],
-        name="nms",
-        tag="nms",
+        dtype=["int32", "int32"],
+        in_buffers=[boxes_buf, sorted_scores_buf, sorted_indices_buf, valid_count_buf],
+        name="all_class_nms",
+        tag="all_class_nms",
     )
 
 
@@ -1195,7 +1178,7 @@ def all_class_non_max_suppression(
     valid_count = _get_valid_box_count(sorted_scores, score_threshold)
 
     selected_indices, num_detections = _run_all_class_nms(
-        boxes, sorted_scores, sorted_indices, valid_count
+        boxes, sorted_scores, sorted_indices, valid_count, iou_threshold
     )
 
     row_offsets, num_total_detections = exclusive_scan(num_detections, return_reduction=True)
