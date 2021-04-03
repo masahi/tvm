@@ -689,9 +689,9 @@ def test_all_class_non_max_suppression():
             [[0.1, 0.2, 0.6, 0.3, 0.9], [0.1, 0.2, 0.6, 0.3, 0.9]],
         ]
     ).astype("float32")
-    max_output_boxes_per_class = np.array(2).astype("int64")
-    iou_threshold = np.array(0.8).astype("float32")
-    score_threshold = np.array(0.2).astype("float32")
+    max_output_boxes_per_class = 2
+    iou_threshold = 0.8
+    score_threshold = 0.2
 
     verify_all_class_non_max_suppression(
         boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold

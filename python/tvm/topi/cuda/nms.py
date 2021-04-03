@@ -1002,7 +1002,7 @@ def _get_valid_box_count(scores, score_threshold):
 
     return te.extern(
         [(batch_classes,)],
-        [scores_buf],
+        [scores],
         lambda ins, outs: searchsorted_ir(ins[0], outs[0]),
         dtype=["int32"],
         in_buffers=[scores_buf],
@@ -1053,13 +1053,16 @@ def _all_class_nms_ir(
         pass
 
     def needs_bbox_check(i, j, k):
-        return True
+        return tvm.tir.const(True)
+
+    if isinstance(iou_threshold, float):
+        iou_threshold = tvm.tir.FloatImm("float32", iou_threshold)
 
     return _nms_loop(
         ib,
         batch_class,
         num_anchors,
-        -1,  # top_k
+        tvm.tir.IntImm("int32", -1),  # top_k
         iou_threshold,
         valid_count,
         max_output_size,
@@ -1171,7 +1174,7 @@ def _collect_selected_indices(num_class, selected_indices, num_detections, row_o
 
     return te.extern(
         [(batch_class * num_boxes, 3)],
-        [selected_indices, num_detections_buf, row_offsets_buf],
+        [selected_indices, num_detections, row_offsets],
         lambda ins, outs: _collect_selected_indices_ir(num_class, ins[0], ins[1], ins[2], outs[0]),
         dtype=["int32"],
         in_buffers=[selected_indices_buf, num_detections_buf, row_offsets_buf],
