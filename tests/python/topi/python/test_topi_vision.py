@@ -66,8 +66,7 @@ _proposal_implement = {
 }
 
 _all_class_nms_implement = {
-    "generic": (topi.vision.non_max_suppression, topi.generic.schedule_nms),
-    "gpu": (topi.cuda.non_max_suppression, topi.cuda.schedule_nms),
+    "gpu": (topi.cuda.all_class_non_max_suppression, topi.cuda.schedule_nms),
 }
 
 
@@ -652,8 +651,8 @@ def verify_all_class_non_max_suppression(
 
         tvm_boxes = tvm.nd.array(boxes_np, dev)
         tvm_scores = tvm.nd.array(scores_np, dev)
-        selected_indices = tvm.nd.array(np.zeros((batch, num_class * num_boxes, 2), "int64"))
-        num_detections = tvm.nd.array(np.zeros((batch,), "int64"))
+        selected_indices = tvm.nd.array(np.zeros((batch * num_class * num_boxes, 3), "int32"))
+        num_detections = tvm.nd.array(np.zeros((1,), "int32"))
 
         f = tvm.build(s, [boxes, scores, out[0], out[1]], target)
         f(tvm_boxes, tvm_scores, selected_indices, num_detections)

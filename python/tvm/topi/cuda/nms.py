@@ -1016,11 +1016,11 @@ def _all_class_nms_ir(
     sorted_scores,
     sorted_indices,
     valid_count,
-    max_output_size_per_class,
     batch_class,
     num_class,
     num_anchors,
     iou_threshold,
+    max_output_size_per_class,
     box_indices,
     num_valid_boxes,
 ):
@@ -1029,7 +1029,6 @@ def _all_class_nms_ir(
     sorted_scores = ib.buffer_ptr(sorted_scores)
     sorted_indices = ib.buffer_ptr(sorted_indices)
     valid_count = ib.buffer_ptr(valid_count)
-    max_output_size_per_class = ib.buffer_ptr(max_output_size_per_class)
     box_indices = ib.buffer_ptr(box_indices)
     num_valid_boxes = ib.buffer_ptr(num_valid_boxes)
 
@@ -1048,8 +1047,7 @@ def _all_class_nms_ir(
             box_indices[i, num_current_valid_box] = sorted_indices[i * num_anchors + j]
 
     def max_output_size(batch_class_index):
-        class_id = batch_class_index % num_class
-        return max_output_size_per_class[class_id]
+        return max_output_size_per_class
 
     def on_new_invalidated_box(i, k):
         pass
@@ -1091,23 +1089,20 @@ def _run_all_class_nms(
     valid_count_buf = tvm.tir.decl_buffer(
         valid_count.shape, "int32", "valid_count_buf", data_alignment=4
     )
-    max_output_size_per_class_buf = tvm.tir.decl_buffer(
-        max_output_size_per_class.shape, "int32", "max_output_size_per_class_buf", data_alignment=4
-    )
 
     return te.extern(
         [(batch_class, num_boxes), (batch_class,)],
-        [boxes, sorted_scores, sorted_indices, valid_count, max_output_size_per_class],
+        [boxes, sorted_scores, sorted_indices, valid_count],
         lambda ins, outs: _all_class_nms_ir(
             ins[0],  # boxes
             ins[1],  # sorted_scores
             ins[2],  # sorted_indices
             ins[3],  # valid_count
-            ins[4],  # max_output_size_per_class
             batch_class,
             num_class,
             num_boxes,
             iou_threshold,
+            max_output_size_per_class,
             outs[0],  # box_indices
             outs[1],  # num_valid_boxes
         ),
@@ -1117,7 +1112,6 @@ def _run_all_class_nms(
             sorted_scores_buf,
             sorted_indices_buf,
             valid_count_buf,
-            max_output_size_per_class_buf,
         ],
         name="all_class_nms",
         tag="all_class_nms",
