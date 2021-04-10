@@ -742,3 +742,14 @@ def fast_erf(x):
         The result.
     """
     return cpp.fast_erf(x, x.dtype, tag.ELEMWISE)
+
+
+def ceil_log2(x):
+    """TODO"""
+    if x.dtype in ["float32", "float64"]:
+        return tvm.tir.ceil(tvm.tir.log2(x))
+
+    assert x.dtype in ["int32", "int64"]
+    clz = tvm.tir.clz(x)
+    bits = 32 if x.dtype == "int32" else 64
+    return bits - clz - 1
