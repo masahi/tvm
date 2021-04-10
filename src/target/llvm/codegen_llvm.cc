@@ -848,7 +848,6 @@ llvm::Value* CodeGenLLVM::CreateIntrinsic(const CallNode* op) {
     for (size_t i = 2; i < op->args.size(); ++i) {
       arg_value.push_back(MakeValue(op->args[i]));
       if (i - 2 < static_cast<size_t>(num_signature)) {
-	LOG(INFO) << "arg type: " << GetType(op->args[i]);
         arg_type.push_back(arg_value.back()->getType());
       }
     }
@@ -861,8 +860,6 @@ llvm::Value* CodeGenLLVM::CreateIntrinsic(const CallNode* op) {
     // type as LLVM.
     llvm::Type* return_type = (id != llvm::Intrinsic::prefetch) ? GetLLVMType(GetRef<PrimExpr>(op))
                                                                 : llvm::Type::getVoidTy(*ctx_);
-    LOG(INFO) << "ret type: " << GetType(GetRef<PrimExpr>(op));
-    LOG(INFO) << "arg_type size: " << arg_type.size();
     llvm::Function* f = GetIntrinsicDecl(id, return_type, arg_type);
     ICHECK(f) << "Cannot find intrinsic declaration, possible type mismatch: "
               << llvm::Intrinsic::getName(id, {});
