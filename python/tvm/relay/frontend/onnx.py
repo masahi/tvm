@@ -1343,6 +1343,24 @@ class Slice(OnnxOpConverter):
 
         data_rank = len(infer_shape(inputs[0]))
 
+        def has_static_axes():
+            return (isinstance(axes, _expr.Constant) and
+                    isinstance(starts, _expr.Constant) and
+                    isinstance(ends, _expr.Constant) and
+                    (steps is None or isinstance(steps, _expr.Constant)))
+
+        # Update the starts and ends according to axes if required.
+        if axes is not None and has_static_axes():
+            axes_np = axes.data.asnumpy().astype("int64")
+            begin_np = starts.data.asnumpy().astype("int64")
+            end_np = ends.data.asnumpy().astype("int64")
+            if steps is None:
+                strides_np = np.ones_like(begin_np).astype("int64")
+            else:
+                strides_np = steps.data.asnumpy().astype("int64")
+
+            return _op.strided_slice(inputs[0], list(begin_np), list(end_np), list(strides_np), axes=list(axes_np))
+
         # Update the starts and ends according to axes if required.
         if axes is not None:
             data_shape = shape_of(inputs[0], dtype=infer_type(ends).checked_type.dtype)
