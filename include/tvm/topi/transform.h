@@ -725,6 +725,106 @@ inline Tensor strided_slice(const Tensor& x, const Array<PrimExpr>& begin,
       name, tag);
 }
 
+inline Tensor strided_slice(const Tensor& x, const Array<Integer>& begin, const Array<Integer>& end,
+                            const Array<Integer>& strides, std::string slice_mode = "end",
+                            std::string name = "T_strided_slice", std::string tag = kInjective) {
+  Array<PrimExpr> begin_expr, end_expr, strides_expr;
+  for (size_t i = 0; i < begin.size(); ++i) {
+    begin_expr.push_back(begin[i]);
+  }
+  for (size_t i = 0; i < end.size(); ++i) {
+    end_expr.push_back(end[i]);
+  }
+  for (size_t i = 0; i < strides.size(); ++i) {
+    strides_expr.push_back(strides[i]);
+  }
+  return strided_slice(x, begin_expr, end_expr, strides_expr, slice_mode, name, tag);
+}
+
+inline Tensor strided_slice_dynamic_input(const Tensor& input, const Array<Integer>& begin,
+                                          const Array<Integer>& end, const Array<Integer>& strides,
+                                          std::string slice_mode = "end",
+                                          std::string name = "T_strided_slice_dynamic_input",
+                                          std::string tag = kInjective) {
+  size_t src_tensor_dim = input->shape.size();
+  ICHECK(begin.size() == src_tensor_dim)
+      << "for dynamic inputs, len(begin) must equal the input dimension";
+  Array<PrimExpr> out_shape;
+  for (size_t i = 0; i < src_tensor_dim; ++i) {
+    out_shape.push_back(tvm::tir::Var("dim"));
+  }
+  Array<PrimExpr> begin_expr, end_expr, strides_expr;
+  for (size_t i = 0; i < src_tensor_dim; ++i) {
+    int64_t begin_i = begin[i]->value;
+    if (begin_i < 0) {
+      begin_i += topi::detail::GetConstInt(input->shape[i]);
+    }
+    begin_expr.push_back(tir::make_const(begin[0].dtype(), begin_i));
+    strides_expr.push_back(
+        tir::make_const((strides.size() != 0 ? strides[0].dtype() : begin[0].dtype()),
+                        (i < strides.size() ? strides[i]->value : 1)));
+  }
+  return te::compute(
+      out_shape,
+      [&](const Array<tir::Var>& indices) {
+        Array<PrimExpr> real_indices;
+        for (size_t i = 0; i < src_tensor_dim; ++i) {
+          real_indices.push_back(indices[i] * strides_expr[i] + begin_expr[i]);
+        }
+        return input(real_indices);
+      },
+      std::string{"T_strided_slice_dynamic_input"}, std::string{topi::kInjective});
+}
+
+inline Tensor strided_slice_with_axes(const Tensor& input, const Array<Integer>& begin,
+                                      const Array<Integer>& end, const Array<Integer>& strides,
+                                      const Array<Integer>& axes, std::string slice_mode = "end",
+                                      std::string name = "T_strided_slice_dynamic_input",
+                                      std::string tag = kInjective) {
+  size_t src_tensor_dim = input->shape.size();
+
+  ICHECK(axes.size() <= src_tensor_dim);
+  ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size());
+
+  Array<PrimExpr> out_shape;
+  for (size_t i = 0; i < src_tensor_dim; ++i) {
+    out_shape.push_back(input->shape[i]);
+  }
+  Array<PrimExpr> begin_expr;
+  for (size_t i = 0; i < axes.size(); ++i) {
+    auto idim = input->shape[axes[i]];
+    auto b = tvm::if_then_else(begin[i] < 0, begin[i] + idim, begin[i]);
+    auto e = tvm::if_then_else(end[i] < 0, end[i] + idim, end[i]);
+    auto s = strides[i]->value;
+    PrimExpr range;
+    if (s < 0) {
+      b = tvm::min(b, idim - 1);
+      e = tvm::if_then_else(e < -1, -1, e);
+      range = b - e;
+      s = -s;
+    } else {
+      b = tvm::if_then_else(b < 0, 0, b);
+      e = tvm::min(e, idim);
+      range = e - b;
+    }
+    PrimExpr odim = indexdiv(range + tvm::PrimExpr(static_cast<int32_t>(s - 1)), s);
+    out_shape.Set(axes[i], cast(out_shape[i].dtype(), odim));
+    begin_expr.push_back(b);
+  }
+  return te::compute(
+      out_shape,
+      [&](const Array<tir::Var>& indices) {
+        Array<PrimExpr> real_indices;
+        for (size_t i = 0; i < src_tensor_dim; ++i) real_indices.push_back(indices[i]);
+        for (size_t i = 0; i < axes.size(); ++i) {
+          PrimExpr ind = indices[axes[i]] * strides[i] + begin_expr[i];
+          real_indices.Set(axes[i], ind);
+        }
+        return input(real_indices);
+      },
+      std::string{"T_strided_slice_with_axes"}, std::string{topi::kInjective});
+}
+
 /*!
  * \brief Split a tensor into a number of sub-tensors
  *

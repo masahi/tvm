@@ -174,7 +174,10 @@ TVM_REGISTER_GLOBAL("topi.einsum").set_body([](TVMArgs args, TVMRetValue* rv) {
 });
 
 TVM_REGISTER_GLOBAL("topi.strided_slice").set_body([](TVMArgs args, TVMRetValue* rv) {
-  *rv = strided_slice(args[0], args[1], args[2], args[3], args[4]);
+  Array<PrimExpr> begin = args[1];
+  Array<PrimExpr> end = args[2];
+  Array<PrimExpr> strides = args[3];
+  *rv = strided_slice(args[0], begin, end, strides, args[4]);
 });
 
 TVM_REGISTER_GLOBAL("topi.dynamic_strided_slice").set_body([](TVMArgs args, TVMRetValue* rv) {
