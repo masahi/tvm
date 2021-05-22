@@ -418,13 +418,8 @@ class VulkanDeviceAPI final : public DeviceAPI {
   }
 
   static VulkanDeviceAPI* Global() {
-    // Most of the TVM Global() functions allocate with "new" and do
-    // not deallocate, as the OS can clean up any leftover buffers at
-    // the end.  In this case, we need the VulkanDeviceAPI destructor
-    // to call vkDestroyInstance, to prevent a segfault on exit when
-    // using some nvidia drivers.
-    static VulkanDeviceAPI inst;
-    return &inst;
+    static VulkanDeviceAPI* inst = new VulkanDeviceAPI();
+    return inst;
   }
 
   const VulkanContext& context(size_t device_id) const {
