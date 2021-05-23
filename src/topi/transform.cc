@@ -189,7 +189,7 @@ TVM_REGISTER_GLOBAL("topi.strided_slice").set_body([](TVMArgs args, TVMRetValue*
       *rv = strided_slice_dynamic_input(x, begin_static, end_static, strides_static, slice_mode);
     }
   } else {
-    *rv = dynamic_strided_slice(x, begin, end, strides, slice_mode);
+    *rv = dynamic_strided_slice(x, begin, end, strides);
   }
 });
 
