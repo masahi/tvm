@@ -593,6 +593,32 @@ inline te::Tensor dynamic_strided_slice(const te::Tensor& x, const te::Tensor& b
       name, tag);
 }
 
+inline Tensor dynamic_strided_slice(const Tensor& x, const Array<PrimExpr>& begin,
+                                    const Array<PrimExpr>& end, const Array<PrimExpr>& strides,
+                                    std::string slice_mode = "end",
+                                    std::string name = "T_strided_slice",
+                                    std::string tag = kInjective) {
+  size_t src_tensor_dim = static_cast<size_t>(x->shape.size());
+  ICHECK_EQ(begin.size(), src_tensor_dim);
+  ICHECK_EQ(end.size(), src_tensor_dim);
+  ICHECK_EQ(strides.size(), src_tensor_dim);
+
+  Array<PrimExpr> out_shape;
+  for (size_t i = 0; i < src_tensor_dim; ++i) {
+    out_shape.push_back(indexdiv(end[i] - begin[i], strides[i]));
+  }
+  return te::compute(
+      out_shape,
+      [&](const Array<tvm::tir::Var>& indices) {
+        Array<PrimExpr> real_indices;
+        for (size_t i = 0; i < src_tensor_dim; ++i) {
+          real_indices.push_back(indices[i] * strides[i] + begin[i]);
+        }
+        return x(real_indices);
+      },
+      name, tag);
+}
+
 inline Tensor strided_slice_dynamic_input(const Tensor& input, const Array<Integer>& begin,
                                           const Array<Integer>& end, const Array<Integer>& strides,
                                           std::string slice_mode = "end",
