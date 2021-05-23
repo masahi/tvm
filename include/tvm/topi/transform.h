@@ -593,154 +593,6 @@ inline te::Tensor dynamic_strided_slice(const te::Tensor& x, const te::Tensor& b
       name, tag);
 }
 
-/*!
- * \brief strided_slice of a tensor
- *
- * \param x The input tensor
- * \param begin The indices to begin with in the slicing
- * \param end Indicies indicating end of the slice
- * \param strides Specifies the stride values, it can be negative
- * in that case, the input tensor will be reversed in that particular axis
- * \param slice_mode Specifies the slice mode
- * \param name The name of the operation
- * \param tag The tag to mark the operation
- *
- * \return A Tensor whose op member is the split operation
- */
-inline Tensor strided_slice(const Tensor& x, const Array<PrimExpr>& begin,
-                            const Array<PrimExpr>& end, const Array<PrimExpr>& strides,
-                            std::string slice_mode = "end", std::string name = "T_strided_slice",
-                            std::string tag = kInjective) {
-  size_t src_tensor_dim = static_cast<size_t>(x->shape.size());
-  // Quick path for dynamic shape strided slice.
-  // This is for ease of use to dynamice strided slice in topi.
-  bool is_static = IsConstIntArray(x->shape);
-  is_static &= IsConstIntArray(begin);
-  is_static &= IsConstIntArray(end);
-  is_static &= IsConstIntArray(strides);
-
-  Array<PrimExpr> out_shape;
-  if (!is_static) {
-    ICHECK_EQ(strides.size(), src_tensor_dim);
-    for (size_t i = 0; i < src_tensor_dim; ++i) {
-      out_shape.push_back(indexdiv(end[i] - begin[i], strides[i]));
-    }
-    return te::compute(
-        out_shape,
-        [&](const Array<tvm::tir::Var>& indices) {
-          Array<PrimExpr> real_indices;
-          for (size_t i = 0; i < src_tensor_dim; ++i) {
-            real_indices.push_back(indices[i] * strides[i] + begin[i]);
-          }
-          return x(real_indices);
-        },
-        name, tag);
-  }
-
-  // Setup the ranges.
-  // NOTE: this code duplicates the shape inference logic relay.op
-  // Consider to refactor in the future.
-  std::vector<int64_t> stride_vec(src_tensor_dim, 1);
-  for (size_t i = 0; i < strides.size(); ++i) {
-    ICHECK(strides[i].defined());
-    stride_vec[i] = GetConstInt(strides[i]);
-  }
-
-  const int64_t max_range = std::numeric_limits<int64_t>::max();
-
-  std::vector<int64_t> begin_vec;
-  for (size_t i = 0; i < begin.size(); ++i) {
-    if (!begin[i].defined()) {
-      // value=None
-      begin_vec.push_back(stride_vec[i] > 0 ? 0 : max_range);
-    } else {
-      begin_vec.push_back(GetConstInt(begin[i]));
-    }
-  }
-  for (size_t i = begin_vec.size(); i < src_tensor_dim; ++i) {
-    begin_vec.push_back(stride_vec[i] > 0 ? 0 : max_range);
-  }
-
-  std::vector<int64_t> end_vec;
-  for (size_t i = 0; i < end.size(); ++i) {
-    // allow end to be None
-
-    if (!end[i].defined()) {
-      end_vec.push_back(stride_vec[i] < 0 ? 0 : max_range);
-    } else if (slice_mode == "size") {
-      int64_t end_val = GetConstInt(end[i]);
-      if (end_val < 0) {
-        end_vec.push_back(stride_vec[i] < 0 ? 0 : max_range);
-      } else {
-        end_vec.push_back(begin_vec[i] + end_val);
-      }
-    } else {
-      end_vec.push_back(GetConstInt(end[i]));
-    }
-  }
-  for (size_t i = end_vec.size(); i < src_tensor_dim; ++i) {
-    end_vec.push_back(stride_vec[i] < 0 ? 0 : max_range);
-  }
-  // Compute
-  Array<PrimExpr> begin_expr;
-  Array<PrimExpr> strides_expr;
-
-  for (size_t i = 0; i < src_tensor_dim; ++i) {
-    int64_t begin_range = stride_vec[i] < 0 ? -1 : 0;
-    int64_t dim_i = GetConstInt(x->shape[i]);
-    int64_t end_range = stride_vec[i] < 0 ? dim_i - 1 : dim_i;
-    // transform negative indices to positive value, clips on the correct range
-    auto index_canonicalization = [dim_i, begin_range, end_range](int64_t index) {
-      if (index < 0) {
-        index += dim_i;
-      }
-      return std::min(std::max(index, begin_range), end_range);
-    };
-
-    int64_t begin_i = index_canonicalization(begin_vec[i]);
-    int64_t end_i = index_canonicalization(end_vec[i]);
-
-    int interval = std::abs(end_i - begin_i);
-    int slice_size =
-        static_cast<int>((interval + std::abs(stride_vec[i]) - 1) / std::abs(stride_vec[i]));
-    ICHECK(stride_vec[i] < 0 ? (end_i <= begin_i) : (begin_i <= end_i))
-        << ": Input [Begin=" << begin_vec[i] << ", End=" << end_vec[i]
-        << "] is invalid for axis=" << i;
-
-    begin_expr.push_back(make_const(begin[0].dtype(), begin_i));
-    strides_expr.push_back(
-        make_const((strides.size() != 0 ? strides[0].dtype() : begin[0].dtype()), stride_vec[i]));
-    out_shape.push_back(slice_size);
-  }
-
-  return compute(
-      out_shape,
-      [&](const Array<Var>& indices) {
-        Array<PrimExpr> real_indices;
-        for (size_t i = 0; i < src_tensor_dim; ++i) {
-          real_indices.push_back(indices[i] * strides_expr[i] + begin_expr[i]);
-        }
-        return x(real_indices);
-      },
-      name, tag);
-}
-
-inline Tensor strided_slice(const Tensor& x, const Array<Integer>& begin, const Array<Integer>& end,
-                            const Array<Integer>& strides, std::string slice_mode = "end",
-                            std::string name = "T_strided_slice", std::string tag = kInjective) {
-  Array<PrimExpr> begin_expr, end_expr, strides_expr;
-  for (size_t i = 0; i < begin.size(); ++i) {
-    begin_expr.push_back(begin[i]);
-  }
-  for (size_t i = 0; i < end.size(); ++i) {
-    end_expr.push_back(end[i]);
-  }
-  for (size_t i = 0; i < strides.size(); ++i) {
-    strides_expr.push_back(strides[i]);
-  }
-  return strided_slice(x, begin_expr, end_expr, strides_expr, slice_mode, name, tag);
-}
-
 inline Tensor strided_slice_dynamic_input(const Tensor& input, const Array<Integer>& begin,
                                           const Array<Integer>& end, const Array<Integer>& strides,
                                           std::string slice_mode = "end",
@@ -776,41 +628,89 @@ inline Tensor strided_slice_dynamic_input(const Tensor& input, const Array<Integ
       std::string{"T_strided_slice_dynamic_input"}, std::string{topi::kInjective});
 }
 
-inline Tensor strided_slice_with_axes(const Tensor& input, const Array<Integer>& begin,
+inline Tensor strided_slice_with_axes(const Tensor& x, const Array<Integer>& begin,
                                       const Array<Integer>& end, const Array<Integer>& strides,
                                       const Array<Integer>& axes, std::string slice_mode = "end",
                                       std::string name = "T_strided_slice_dynamic_input",
                                       std::string tag = kInjective) {
-  size_t src_tensor_dim = input->shape.size();
+  size_t src_tensor_dim = x->shape.size();
 
   ICHECK(axes.size() <= src_tensor_dim);
   ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size());
 
-  Array<PrimExpr> out_shape;
-  for (size_t i = 0; i < src_tensor_dim; ++i) {
-    out_shape.push_back(input->shape[i]);
+  // NOTE: this code duplicates the shape inference logic relay.op
+  // Consider to refactor in the future.
+  std::vector<int64_t> stride_vec(strides.size(), 1);
+  for (size_t i = 0; i < strides.size(); ++i) {
+    ICHECK(strides[i].defined());
+    stride_vec[i] = GetConstInt(strides[i]);
   }
-  Array<PrimExpr> begin_expr;
-  for (size_t i = 0; i < axes.size(); ++i) {
-    auto idim = input->shape[axes[i]];
-    auto b = tvm::if_then_else(begin[i] < 0, begin[i] + idim, begin[i]);
-    auto e = tvm::if_then_else(end[i] < 0, end[i] + idim, end[i]);
-    auto s = strides[i]->value;
-    PrimExpr range;
-    if (s < 0) {
-      b = tvm::min(b, idim - 1);
-      e = tvm::if_then_else(e < -1, -1, e);
-      range = b - e;
-      s = -s;
+
+  const int64_t max_range = std::numeric_limits<int64_t>::max();
+
+  std::vector<int64_t> begin_vec;
+  for (size_t i = 0; i < begin.size(); ++i) {
+    if (!begin[i].defined()) {
+      // value=None
+      begin_vec.push_back(stride_vec[i] > 0 ? 0 : max_range);
     } else {
-      b = tvm::if_then_else(b < 0, 0, b);
-      e = tvm::min(e, idim);
-      range = e - b;
+      begin_vec.push_back(GetConstInt(begin[i]));
     }
-    PrimExpr odim = indexdiv(range + tvm::PrimExpr(static_cast<int32_t>(s - 1)), s);
-    out_shape.Set(axes[i], cast(out_shape[i].dtype(), odim));
-    begin_expr.push_back(b);
   }
+
+  std::vector<int64_t> end_vec;
+  for (size_t i = 0; i < end.size(); ++i) {
+    // allow end to be None
+
+    if (!end[i].defined()) {
+      end_vec.push_back(stride_vec[i] < 0 ? 0 : max_range);
+    } else if (slice_mode == "size") {
+      int64_t end_val = GetConstInt(end[i]);
+      if (end_val < 0) {
+        end_vec.push_back(stride_vec[i] < 0 ? 0 : max_range);
+      } else {
+        end_vec.push_back(begin_vec[i] + end_val);
+      }
+    } else {
+      end_vec.push_back(GetConstInt(end[i]));
+    }
+  }
+
+  // Compute
+  Array<PrimExpr> begin_expr;
+  Array<PrimExpr> strides_expr;
+
+  Array<PrimExpr> out_shape;
+  for (size_t i = 0; i < axes.size(); ++i) {
+    int64_t begin_range = stride_vec[i] < 0 ? -1 : 0;
+    ICHECK(x->shape[axes[i]]->IsInstance<tvm::IntImmNode>())
+        << "Input shape at axis " << axes[i] << " is not static";
+    int64_t dim_i = GetConstInt(x->shape[axes[i]]);
+    int64_t end_range = stride_vec[i] < 0 ? dim_i - 1 : dim_i;
+    // transform negative indices to positive value, clips on the correct range
+    auto index_canonicalization = [dim_i, begin_range, end_range](int64_t index) {
+      if (index < 0) {
+        index += dim_i;
+      }
+      return std::min(std::max(index, begin_range), end_range);
+    };
+
+    int64_t begin_i = index_canonicalization(begin_vec[i]);
+    int64_t end_i = index_canonicalization(end_vec[i]);
+
+    int interval = std::abs(end_i - begin_i);
+    int slice_size =
+        static_cast<int>((interval + std::abs(stride_vec[i]) - 1) / std::abs(stride_vec[i]));
+    ICHECK(stride_vec[i] < 0 ? (end_i <= begin_i) : (begin_i <= end_i))
+        << ": Input [Begin=" << begin_vec[i] << ", End=" << end_vec[i]
+        << "] is invalid for axis=" << i;
+
+    begin_expr.push_back(make_const(begin[0].dtype(), begin_i));
+    strides_expr.push_back(
+        make_const((strides.size() != 0 ? strides[0].dtype() : begin[0].dtype()), stride_vec[i]));
+    out_shape.push_back(slice_size);
+  }
+
   return te::compute(
       out_shape,
       [&](const Array<tir::Var>& indices) {
@@ -820,9 +720,51 @@ inline Tensor strided_slice_with_axes(const Tensor& input, const Array<Integer>&
           PrimExpr ind = indices[axes[i]] * strides[i] + begin_expr[i];
           real_indices.Set(axes[i], ind);
         }
-        return input(real_indices);
+        return x(real_indices);
       },
       std::string{"T_strided_slice_with_axes"}, std::string{topi::kInjective});
+}
+
+/*!
+ * \brief strided_slice of a tensor
+ *
+ * \param x The input tensor
+ * \param begin The indices to begin with in the slicing
+ * \param end Indicies indicating end of the slice
+ * \param strides Specifies the stride values, it can be negative
+ * in that case, the input tensor will be reversed in that particular axis
+ * \param slice_mode Specifies the slice mode
+ * \param name The name of the operation
+ * \param tag The tag to mark the operation
+ *
+ * \return A Tensor whose op member is the split operation
+ */
+inline Tensor strided_slice(const Tensor& x, const Array<Integer>& begin, const Array<Integer>& end,
+                            const Array<Integer>& strides, std::string slice_mode = "end",
+                            std::string name = "T_strided_slice", std::string tag = kInjective) {
+  size_t src_tensor_dim = static_cast<size_t>(x->shape.size());
+  Array<Integer> axes;
+  for (size_t i = 0; i < src_tensor_dim; ++i) axes.push_back(i);
+  Array<Integer> begin_full(begin);
+  Array<Integer> end_full(end);
+  Array<Integer> strides_full(strides);
+
+  const IntImm one = IntImm(DataType::Int(64), 1);
+  const IntImm zero = IntImm(DataType::Int(64), 1);
+  const IntImm max_range = IntImm(DataType::Int(64), std::numeric_limits<int64_t>::max());
+
+  for (size_t i = strides_full.size(); i < src_tensor_dim; ++i) {
+    strides_full.push_back(one);
+  }
+  for (size_t i = begin.size(); i < src_tensor_dim; ++i) {
+    begin_full.push_back(GetConstInt(strides_full[i]) > 0 ? zero : max_range);
+  }
+  for (size_t i = end.size(); i < src_tensor_dim; ++i) {
+    end_full.push_back(GetConstInt(strides_full[i]) < 0 ? zero : max_range);
+  }
+
+  return strided_slice_with_axes(x, begin_full, end_full, strides_full, axes, slice_mode, name,
+                                 tag);
 }
 
 /*!

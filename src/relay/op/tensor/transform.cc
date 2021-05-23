@@ -3072,16 +3072,21 @@ Array<te::Tensor> SliceLikeCompute(const Attrs& attrs, const Array<te::Tensor>& 
   ICHECK(param != nullptr);
   Array<IndexExpr> src_shape = inputs[0]->shape;
   Array<IndexExpr> target_shape = inputs[1]->shape;
-  Array<IndexExpr> begin_idx, end_idx, strides;
+  Array<Integer> begin_idx, end_idx, strides;
   for (size_t i = 0; i < src_shape.size(); ++i) {
     begin_idx.push_back(0);
     strides.push_back(1);
   }
-  end_idx = Array<IndexExpr>(src_shape);
+  for (auto s : src_shape) {
+    ICHECK(s->IsInstance<tvm::IntImmNode>()) << "slice_like does not support dynamic input shape";
+    end_idx.push_back(topi::GetConstInt(s));
+  }
   if (!param->axes.defined()) {
     for (size_t i = 0; i < src_shape.size(); ++i) {
       if (i < target_shape.size()) {
-        end_idx.Set(i, target_shape[i]);
+        ICHECK(target_shape[i]->IsInstance<tvm::IntImmNode>())
+            << "slice_like does not support dynamic output shape";
+        end_idx.Set(i, topi::GetConstInt(target_shape[i]));
         ICHECK_LE(topi::GetConstInt(end_idx[i]), topi::GetConstInt(src_shape[i]))
             << "End index of axis " << i
             << " exceeds input shape: " << topi::GetConstInt(end_idx[i]) << " vs "
@@ -3093,7 +3098,9 @@ Array<te::Tensor> SliceLikeCompute(const Attrs& attrs, const Array<te::Tensor>& 
       if (axis < 0) {
         axis = static_cast<int>(src_shape.size()) + axis;
       }
-      end_idx.Set(axis, target_shape[axis]);
+      ICHECK(target_shape[axis]->IsInstance<tvm::IntImmNode>())
+          << "slice_like does not support dynamic output shape";
+      end_idx.Set(axis, topi::GetConstInt(target_shape[axis]));
       ICHECK_LE(topi::GetConstInt(end_idx[axis]), topi::GetConstInt(src_shape[axis]))
           << "End index of axis " << axis
           << " exceeds input shape: " << topi::GetConstInt(end_idx[axis]) << " vs "

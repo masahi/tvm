@@ -347,6 +347,7 @@ TVM_REGISTER_TARGET_KIND("vulkan", kDLVulkan)
     .set_default_keys({"vulkan", "gpu"})
     .set_attrs_preprocessor(UpdateVulkanAttrs);
 
+
 TVM_REGISTER_TARGET_KIND("webgpu", kDLWebGPU)
     .add_attr_option<Bool>("system-lib")
     .add_attr_option<Integer>("max_num_threads", Integer(256))
