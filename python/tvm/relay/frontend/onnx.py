@@ -1359,7 +1359,7 @@ class Slice(OnnxOpConverter):
             else:
                 strides_np = steps.data.asnumpy().astype("int64")
 
-            # return _op.strided_slice(inputs[0], list(begin_np), list(end_np), list(strides_np), axes=list(axes_np))
+            return _op.strided_slice(inputs[0], list(begin_np), list(end_np), list(strides_np), axes=list(axes_np))
 
         # Update the starts and ends according to axes if required.
         if axes is not None:
