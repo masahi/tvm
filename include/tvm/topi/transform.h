@@ -625,26 +625,26 @@ inline te::Tensor dynamic_strided_slice(const te::Tensor& x, const te::Tensor& b
   return dynamic_strided_slice(x, begin_expr, end_expr, strides_expr, name, tag);
 }
 
-inline Tensor strided_slice_with_axes(const Tensor& x, const Array<Integer>& begin,
-                                      const Array<Integer>& end, const Array<Integer>& strides,
-                                      const Array<Integer>& axes, std::string slice_mode = "end",
-                                      std::string name = "T_strided_slice_with_axes",
-                                      std::string tag = kInjective) {
-  size_t src_tensor_dim = x->shape.size();
-
-  ICHECK(axes.size() <= src_tensor_dim);
-  ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size());
-
-  // NOTE: this code duplicates the shape inference logic relay.op
-  // Consider to refactor in the future.
-  std::vector<int64_t> stride_vec(strides.size(), 1);
-  for (size_t i = 0; i < strides.size(); ++i) {
-    ICHECK(strides[i].defined());
-    stride_vec[i] = GetConstInt(strides[i]);
+inline int64_t CanonicalizeIndex(int64_t index, int64_t extent, int64_t stride) {
+  int64_t begin_range = stride < 0 ? -1 : 0;
+  int64_t end_range = stride < 0 ? extent - 1 : extent;
+  if (index < 0) {
+    index += extent;
   }
+  return std::min(std::max(index, begin_range), end_range);
+}
 
+inline std::tuple<std::vector<int64_t>, std::vector<int64_t>, std::vector<int64_t>>
+ToVec(const Array<Integer>& begin, const Array<Integer>& end,
+                        const Array<Integer>& strides, std::string slice_mode) {
+  std::vector<int64_t> stride_vec(strides.size(), 1);
+  if (slice_mode == "end") {
+    for (size_t i = 0; i < strides.size(); ++i) {
+      ICHECK(strides[i].defined());
+      stride_vec[i] = GetConstInt(strides[i]);
+    }
+  }
   const int64_t max_range = std::numeric_limits<int64_t>::max();
-
   std::vector<int64_t> begin_vec;
   for (size_t i = 0; i < begin.size(); ++i) {
     if (!begin[i].defined()) {
@@ -654,7 +654,6 @@ inline Tensor strided_slice_with_axes(const Tensor& x, const Array<Integer>& beg
       begin_vec.push_back(GetConstInt(begin[i]));
     }
   }
-
   std::vector<int64_t> end_vec;
   for (size_t i = 0; i < end.size(); ++i) {
     // allow end to be None
@@ -671,52 +670,98 @@ inline Tensor strided_slice_with_axes(const Tensor& x, const Array<Integer>& beg
       end_vec.push_back(GetConstInt(end[i]));
     }
   }
+  return std::make_tuple(begin_vec, end_vec, stride_vec);
+}
 
-  // Compute
-  Array<PrimExpr> out_shape;
-  for (size_t i = 0; i < src_tensor_dim; ++i) {
-    out_shape.push_back(x->shape[i]);
-  }
 
-  Array<PrimExpr> begin_expr, strides_expr;
+inline Array<PrimExpr> StridedSliceCanonicalizeBegin(const Tensor& x, const std::vector<int64_t>& begin,
+						     const std::vector<int64_t>& strides,
+                                                     const Array<Integer>& axes,
+						     DataType dtype,
+                                                     std::string slice_mode = "end") {
+  Array<PrimExpr> begin_expr;
   for (size_t i = 0; i < axes.size(); ++i) {
-    int64_t begin_range = stride_vec[i] < 0 ? -1 : 0;
     if (x->shape[axes[i]]->IsInstance<tvm::IntImmNode>()) {
       int64_t dim_i = GetConstInt(x->shape[axes[i]]);
-      int64_t end_range = stride_vec[i] < 0 ? dim_i - 1 : dim_i;
-      // transform negative indices to positive value, clips on the correct range
-      auto index_canonicalization = [dim_i, begin_range, end_range](int64_t index) {
-        if (index < 0) {
-          index += dim_i;
-        }
-        return std::min(std::max(index, begin_range), end_range);
-      };
-
-      int64_t begin_i = index_canonicalization(begin_vec[i]);
-      int64_t end_i = index_canonicalization(end_vec[i]);
-
-      int interval = std::abs(end_i - begin_i);
-      int slice_size =
-          static_cast<int>((interval + std::abs(stride_vec[i]) - 1) / std::abs(stride_vec[i]));
-      ICHECK(stride_vec[i] < 0 ? (end_i <= begin_i) : (begin_i <= end_i))
-          << ": Input [Begin=" << begin_vec[i] << ", End=" << end_vec[i]
-          << "] is invalid for axis=" << i;
-
-      begin_expr.push_back(make_const(begin[0].dtype(), begin_i));
-      out_shape.Set(axes[i], cast(out_shape[i].dtype(), PrimExpr(slice_size)));
+      int64_t begin_i = CanonicalizeIndex(begin[i], dim_i, strides[i]);
+      begin_expr.push_back(make_const(dtype, begin_i));
     } else {
       auto idim = x->shape[axes[i]];
-      auto b = tvm::if_then_else(begin[i] < 0, begin[i] + idim, begin[i]);
-      auto s = strides[i]->value;
+      auto b_expr = make_const(dtype, begin[i]);
+      auto b = tvm::if_then_else(begin[i] < 0, b_expr + idim, b_expr);
+      auto s = strides[i];
       if (s < 0) {
         b = tvm::min(b, idim - 1);
       } else {
         b = tvm::if_then_else(b < 0, 0, b);
       }
-      out_shape.Set(axes[i], tvm::tir::Var("dim", out_shape[i]->dtype));
       begin_expr.push_back(b);
     }
-    strides_expr.push_back(make_const(strides[i].dtype(), stride_vec[i]));
+  }
+  return begin_expr;
+}
+
+inline Array<PrimExpr> StridedSliceOutputShape(const Tensor& x, const std::vector<int64_t>& begin,
+                                               const std::vector<int64_t>& end,
+                                               const std::vector<int64_t>& strides,
+                                               const Array<Integer>& axes, std::string slice_mode,
+                                               const Array<PrimExpr>& begin_expr) {
+  size_t src_tensor_dim = x->shape.size();
+  Array<PrimExpr> out_shape;
+  for (size_t i = 0; i < src_tensor_dim; ++i) {
+    out_shape.push_back(x->shape[i]);
+  }
+
+  for (size_t i = 0; i < axes.size(); ++i) {
+    if (x->shape[axes[i]]->IsInstance<tvm::IntImmNode>()) {
+      const int64_t dim_i = GetConstInt(x->shape[axes[i]]);
+      int64_t begin_i = GetConstInt(begin_expr[i]);
+      int64_t end_i = CanonicalizeIndex(end[i], dim_i, strides[i]);
+      int interval = std::abs(end_i - begin_i);
+      int slice_size =
+          static_cast<int>((interval + std::abs(strides[i]) - 1) / std::abs(strides[i]));
+      ICHECK(strides[i] < 0 ? (end_i <= begin_i) : (begin_i <= end_i))
+          << ": Input [Begin=" << begin[i] << ", End=" << end[i]
+          << "] is invalid for axis=" << i;
+      out_shape.Set(axes[i], cast(out_shape[i].dtype(), PrimExpr(slice_size)));
+    } else {
+      out_shape.Set(axes[i], tvm::tir::Var("dim", out_shape[i]->dtype));
+    }
+  }
+
+  return out_shape;
+}
+
+// inline Array<PrimExpr> StridedSliceOutputShape(const Tensor& x, const Array<Integer>& begin,
+//                                                const Array<Integer>& end,
+//                                                const Array<Integer>& strides,
+//                                                const Array<Integer>& axes, std::string slice_mode) {
+//   Array<PrimExpr> begin_expr = StridedSliceCanonicalizeBegin(x, begin, strides, axes, slice_mode);
+//   return StridedSliceOutputShape(x, begin, end, strides, axes, slice_mode, begin_expr);
+// }
+
+inline Tensor strided_slice_with_axes(const Tensor& x, const Array<Integer>& begin,
+                                      const Array<Integer>& end, const Array<Integer>& strides,
+                                      const Array<Integer>& axes, std::string slice_mode = "end",
+                                      std::string name = "T_strided_slice_with_axes",
+                                      std::string tag = kInjective) {
+  size_t src_tensor_dim = x->shape.size();
+
+  ICHECK(axes.size() <= src_tensor_dim);
+  ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size());
+
+  std::vector<int64_t> begin_vec, end_vec, strides_vec;
+  std::tie(begin_vec, end_vec, strides_vec) = ToVec(begin, end, strides, slice_mode);
+  Array<PrimExpr> begin_expr = StridedSliceCanonicalizeBegin(x, begin_vec, strides_vec, axes, begin[0]->dtype, slice_mode);
+  Array<PrimExpr> out_shape =
+      StridedSliceOutputShape(x, begin_vec, end_vec, strides_vec, axes, slice_mode, begin_expr);
+  Array<PrimExpr> strides_expr;
+  for (size_t i = 0; i < axes.size(); ++i) {
+    if (slice_mode == "end") {
+      strides_expr.push_back(make_const(strides[i].dtype(), GetConstInt(strides[i])));
+    } else {
+      strides_expr.push_back(make_const(strides[i].dtype(), 1));
+    }
   }
 
   return te::compute(
@@ -1743,168 +1788,169 @@ inline Tensor sparse_to_dense(const Tensor& sparse_indices, const Array<PrimExpr
   }
   return compute(
       oshape,
-      [&](const Array<Var>& indices) {
-        PrimExpr ret = default_value;
-        if (0 == rank_sparse_indices) {
-          ret = if_then_else(indices[0] == sparse_indices[0], sparse_values[0], ret);
-        } else if (1 == rank_sparse_indices) {
-          for (int j = 0; j < GetConstInt(sparse_indices->shape[0]); j++) {
-            ret = if_then_else(indices[0] == sparse_indices[j], sparse_values[j], ret);
-          }
-        } else {
-          for (int j = 0; j < GetConstInt(sparse_indices->shape[0]); j++) {
-            PrimExpr aggregate_condition;
-            for (int k = 0; k < GetConstInt(sparse_indices->shape[1]); k++) {
-              PrimExpr comparision = indices[k] == sparse_indices[j][k];
-              aggregate_condition = 0 == k ? comparision : aggregate_condition && comparision;
+        [&](const Array<Var>& indices) {
+          PrimExpr ret = default_value;
+          if (0 == rank_sparse_indices) {
+            ret = if_then_else(indices[0] == sparse_indices[0], sparse_values[0], ret);
+          } else if (1 == rank_sparse_indices) {
+            for (int j = 0; j < GetConstInt(sparse_indices->shape[0]); j++) {
+              ret = if_then_else(indices[0] == sparse_indices[j], sparse_values[j], ret);
             }
-            ret = if_then_else(aggregate_condition, sparse_values[j], ret);
-          }
-        }
-        return ret;
-      },
-      name, tag);
-}
-
-/*!
- * \brief Returns a tensor with the diagonal of input tensor replaced with the provided diagonals.
- * \param input input tensor.
- * \param diagonal values to be filled in the diagonals.
- * \param k1 lower limit (included) of the range of diagonals.
- * \param k2 upper limit (included) of the range of diagonals.
- * \param super_diag_right_align bool, true iff super-diagonal is right aligned (left-padded).
- * \param sub_diag_right_align bool, true iff sub-diagonal is right aligned (left-padded).
- * \param name output tensor name.
- * \param tag output tensor tag.
- * \return new tensor with given diagonal values.
- */
-inline Tensor matrix_set_diag(const Tensor& input, const Tensor& diagonal, int k1, int k2,
-                              bool super_diag_right_align, bool sub_diag_right_align,
-                              const std::string name = "T_matrix_set_diag",
-                              const std::string tag = kInjective) {
-  size_t ndim = input->shape.size() - 1;
-
-  bool only_one_diagonal = k1 == k2;
-
-  return compute(
-      input->shape,
-      [&](const Array<Var>& iter_vars) {
-        auto get_diag = [&]() {
-          Array<PrimExpr> diagonal_indices;
-          PrimExpr k, offset = 0;
-          for (size_t i = 0; i < ndim - 1; i++) {
-            diagonal_indices.push_back(iter_vars[i]);
-          }
-          if (only_one_diagonal) {
-            k = k1;
           } else {
-            // Determining which diagonal/sub-diagonal/super-diagonal it is
-            k = iter_vars[ndim] - iter_vars[ndim - 1];
-            diagonal_indices.push_back(k2 - k);
-
-            // Calculating the offset in diagonal tensor for this diagonal
-            auto get_offset = [&](PrimExpr M, PrimExpr N) {
-              // offset = max_diagonal_length - diagonal_length
-              return diagonal->shape[diagonal->shape.size() - 1] - if_then_else(M < N, M, N);
-            };
-            offset = if_then_else(
-                k >= 0,
-                super_diag_right_align ? get_offset(input->shape[ndim] - k, input->shape[ndim - 1])
-                                       : 0,
-                sub_diag_right_align ? get_offset(input->shape[ndim], input->shape[ndim - 1] + k)
-                                     : 0);
+            for (int j = 0; j < GetConstInt(sparse_indices->shape[0]); j++) {
+              PrimExpr aggregate_condition;
+              for (int k = 0; k < GetConstInt(sparse_indices->shape[1]); k++) {
+                PrimExpr comparision = indices[k] == sparse_indices[j][k];
+                aggregate_condition = 0 == k ? comparision : aggregate_condition && comparision;
+              }
+              ret = if_then_else(aggregate_condition, sparse_values[j], ret);
+            }
           }
-          diagonal_indices.push_back(if_then_else(k >= 0, iter_vars[ndim - 1], iter_vars[ndim]) +
-                                     offset);
-          return diagonal(diagonal_indices);
-        };
-        return if_then_else((PrimExpr)iter_vars[ndim] - iter_vars[ndim - 1] >= k1,
-                            if_then_else((PrimExpr)iter_vars[ndim] - iter_vars[ndim - 1] <= k2,
-                                         get_diag(), input(iter_vars)),
-                            input(iter_vars));
-      },
-      name, tag);
-}
+          return ret;
+        },
+        name, tag);
+  }
 
-/*!
- * \brief Numpy style advanced indexing with tensor.
- * \param data is input data.
- * \param indices is list of indexing tensors.
- * \param name output tensor name.
- * \param tag output tensor tag.
- * \return Output tensor.
- */
-inline Tensor adv_index(const Tensor& data, const Array<Tensor>& indices,
-                        const std::string name = "advanced_index",
-                        const std::string tag = kInjective) {
-  Array<PrimExpr> oshape;
-  Array<PrimExpr> broadcast_shape;
-  Array<Tensor> bindices;
-  std::vector<int64_t> flatten_shape_lens;
-  int64_t num_picked_elems = 1;
-  bool has_dyn_shape = false;
+  /*!
+   * \brief Returns a tensor with the diagonal of input tensor replaced with the provided diagonals.
+   * \param input input tensor.
+   * \param diagonal values to be filled in the diagonals.
+   * \param k1 lower limit (included) of the range of diagonals.
+   * \param k2 upper limit (included) of the range of diagonals.
+   * \param super_diag_right_align bool, true iff super-diagonal is right aligned (left-padded).
+   * \param sub_diag_right_align bool, true iff sub-diagonal is right aligned (left-padded).
+   * \param name output tensor name.
+   * \param tag output tensor tag.
+   * \return new tensor with given diagonal values.
+   */
+  inline Tensor matrix_set_diag(const Tensor& input, const Tensor& diagonal, int k1, int k2,
+                                bool super_diag_right_align, bool sub_diag_right_align,
+                                const std::string name = "T_matrix_set_diag",
+                                const std::string tag = kInjective) {
+    size_t ndim = input->shape.size() - 1;
 
-  if (indices.size() == 1) {
-    broadcast_shape = indices[0]->shape;
-    bindices = indices;
-  } else {
-    for (const auto& index : indices) {
-      int64_t flatten_len = 1;
-      for (const auto& dim : index->shape) {
-        const IntImmNode* axis_len = dim.as<IntImmNode>();
-        if (!axis_len) {
+    bool only_one_diagonal = k1 == k2;
+
+    return compute(
+        input->shape,
+        [&](const Array<Var>& iter_vars) {
+          auto get_diag = [&]() {
+            Array<PrimExpr> diagonal_indices;
+            PrimExpr k, offset = 0;
+            for (size_t i = 0; i < ndim - 1; i++) {
+              diagonal_indices.push_back(iter_vars[i]);
+            }
+            if (only_one_diagonal) {
+              k = k1;
+            } else {
+              // Determining which diagonal/sub-diagonal/super-diagonal it is
+              k = iter_vars[ndim] - iter_vars[ndim - 1];
+              diagonal_indices.push_back(k2 - k);
+
+              // Calculating the offset in diagonal tensor for this diagonal
+              auto get_offset = [&](PrimExpr M, PrimExpr N) {
+                // offset = max_diagonal_length - diagonal_length
+                return diagonal->shape[diagonal->shape.size() - 1] - if_then_else(M < N, M, N);
+              };
+              offset = if_then_else(k >= 0,
+                                    super_diag_right_align
+                                        ? get_offset(input->shape[ndim] - k, input->shape[ndim - 1])
+                                        : 0,
+                                    sub_diag_right_align
+                                        ? get_offset(input->shape[ndim], input->shape[ndim - 1] + k)
+                                        : 0);
+            }
+            diagonal_indices.push_back(if_then_else(k >= 0, iter_vars[ndim - 1], iter_vars[ndim]) +
+                                       offset);
+            return diagonal(diagonal_indices);
+          };
+          return if_then_else((PrimExpr)iter_vars[ndim] - iter_vars[ndim - 1] >= k1,
+                              if_then_else((PrimExpr)iter_vars[ndim] - iter_vars[ndim - 1] <= k2,
+                                           get_diag(), input(iter_vars)),
+                              input(iter_vars));
+        },
+        name, tag);
+  }
+
+  /*!
+   * \brief Numpy style advanced indexing with tensor.
+   * \param data is input data.
+   * \param indices is list of indexing tensors.
+   * \param name output tensor name.
+   * \param tag output tensor tag.
+   * \return Output tensor.
+   */
+  inline Tensor adv_index(const Tensor& data, const Array<Tensor>& indices,
+                          const std::string name = "advanced_index",
+                          const std::string tag = kInjective) {
+    Array<PrimExpr> oshape;
+    Array<PrimExpr> broadcast_shape;
+    Array<Tensor> bindices;
+    std::vector<int64_t> flatten_shape_lens;
+    int64_t num_picked_elems = 1;
+    bool has_dyn_shape = false;
+
+    if (indices.size() == 1) {
+      broadcast_shape = indices[0]->shape;
+      bindices = indices;
+    } else {
+      for (const auto& index : indices) {
+        int64_t flatten_len = 1;
+        for (const auto& dim : index->shape) {
+          const IntImmNode* axis_len = dim.as<IntImmNode>();
+          if (!axis_len) {
+            broadcast_shape = index->shape;
+            has_dyn_shape = true;
+            break;
+          }
+          flatten_len *= axis_len->value;
+        }
+        if (has_dyn_shape) break;
+        flatten_shape_lens.push_back(flatten_len);
+        if (flatten_len > num_picked_elems) {
+          num_picked_elems = flatten_len;
           broadcast_shape = index->shape;
-          has_dyn_shape = true;
-          break;
         }
-        flatten_len *= axis_len->value;
       }
-      if (has_dyn_shape) break;
-      flatten_shape_lens.push_back(flatten_len);
-      if (flatten_len > num_picked_elems) {
-        num_picked_elems = flatten_len;
-        broadcast_shape = index->shape;
-      }
-    }
 
-    // Do broadcast for indices
-    for (size_t i = 0; i < indices.size(); ++i) {
-      if (!has_dyn_shape && flatten_shape_lens[i] < num_picked_elems) {
-        bindices.push_back(broadcast_to(indices[i], broadcast_shape));
-      } else {
-        bindices.push_back(indices[i]);
+      // Do broadcast for indices
+      for (size_t i = 0; i < indices.size(); ++i) {
+        if (!has_dyn_shape && flatten_shape_lens[i] < num_picked_elems) {
+          bindices.push_back(broadcast_to(indices[i], broadcast_shape));
+        } else {
+          bindices.push_back(indices[i]);
+        }
       }
     }
+
+    for (const auto& dim : broadcast_shape) {
+      oshape.push_back(dim);
+    }
+    for (size_t i = indices.size(); i < data->shape.size(); ++i) {
+      oshape.push_back(data->shape[i]);
+    }
+
+    return compute(
+        oshape,
+        [&](const Array<Var>& iter_var) {
+          Array<PrimExpr> tensor_indices;
+          for (size_t i = 0; i < broadcast_shape.size(); ++i) {
+            tensor_indices.push_back(iter_var[i]);
+          }
+
+          Array<PrimExpr> real_indices;
+          for (size_t i = 0; i < bindices.size(); ++i) {
+            real_indices.push_back(bindices[i](tensor_indices));
+          }
+          for (size_t i = broadcast_shape.size(); i < iter_var.size(); ++i) {
+            real_indices.push_back(iter_var[i]);
+          }
+
+          return data(real_indices);
+        },
+        name, tag);
   }
-
-  for (const auto& dim : broadcast_shape) {
-    oshape.push_back(dim);
-  }
-  for (size_t i = indices.size(); i < data->shape.size(); ++i) {
-    oshape.push_back(data->shape[i]);
-  }
-
-  return compute(
-      oshape,
-      [&](const Array<Var>& iter_var) {
-        Array<PrimExpr> tensor_indices;
-        for (size_t i = 0; i < broadcast_shape.size(); ++i) {
-          tensor_indices.push_back(iter_var[i]);
-        }
-
-        Array<PrimExpr> real_indices;
-        for (size_t i = 0; i < bindices.size(); ++i) {
-          real_indices.push_back(bindices[i](tensor_indices));
-        }
-        for (size_t i = broadcast_shape.size(); i < iter_var.size(); ++i) {
-          real_indices.push_back(iter_var[i]);
-        }
-
-        return data(real_indices);
-      },
-      name, tag);
-}
 
 }  // namespace topi
-}  // namespace tvm
+}  // namespace topi
 #endif  // TVM_TOPI_TRANSFORM_H_
