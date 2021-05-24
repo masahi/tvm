@@ -2449,20 +2449,36 @@ bool StridedSliceRel(const Array<Type>& types, int num_inputs, const Attrs& attr
   ICHECK(param->end) << "strided_slice recieved invalid end " << param->end;
   ICHECK(param->strides) << "strided_slice recieved invalid strides " << param->strides;
 
+  auto begin = param->begin.value();
+  auto end = param->end.value();
+  auto strides = param->strides.value();
+
   const size_t src_tensor_dim = static_cast<size_t>(data->shape.size());
   Array<Integer> axes;
   if (param->axes) {
     axes = param->axes.value();
+    ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size())
+      << "axes, begin, end, and strides must have the same length";
   } else {
     for (size_t i = 0; i < src_tensor_dim; ++i) axes.push_back(i);
+
+    const IntImm one = IntImm(DataType::Int(64), 1);
+    const IntImm zero = IntImm(DataType::Int(64), 0);
+    const IntImm max_range = IntImm(DataType::Int(64), std::numeric_limits<int64_t>::max());
+
+    for (size_t i = strides.size(); i < src_tensor_dim; ++i) {
+      strides.push_back(one);
+    }
+    for (size_t i = begin.size(); i < src_tensor_dim; ++i) {
+      begin.push_back(topi::GetConstInt(strides[i]) > 0 ? zero : max_range);
+    }
+    for (size_t i = end.size(); i < src_tensor_dim; ++i) {
+      end.push_back(topi::GetConstInt(strides[i]) < 0 ? zero : max_range);
+    }
   }
-  auto begin = param->begin.value();
-  auto end = param->end.value();
-  auto strides = param->strides.value();
-  ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size())
-      << "Axes, begin, end, and strides must have the same length";
   auto oshape =
       topi::StridedSliceOutputShape(data->shape, begin, end, strides, axes, param->slice_mode);
+  LOG(INFO) << "oshape: " << oshape;
   reporter->Assign(types[1], TensorType(oshape, data->dtype));
   return true;
 }

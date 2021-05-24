@@ -736,6 +736,7 @@ inline Array<PrimExpr> StridedSliceOutputShape(const Array<PrimExpr>& ishape, co
                                                const Array<Integer>& strides,
                                                const Array<Integer>& axes,
                                                const std::string& slice_mode) {
+  ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size());
   std::vector<int64_t> begin_vec, end_vec, strides_vec;
   std::tie(begin_vec, end_vec, strides_vec) = ToVec(begin, end, strides, slice_mode);
   auto begin_canonicalized =
@@ -744,6 +745,21 @@ inline Array<PrimExpr> StridedSliceOutputShape(const Array<PrimExpr>& ishape, co
                                  begin_canonicalized);
 }
 
+
+/*!
+ * \brief strided_slice of a tensor
+ *
+ * \param x The input tensor
+ * \param begin The indices to begin with in the slicing
+ * \param end Indicies indicating end of the slice
+ * \param strides Specifies the stride values, it can be negative
+ * in that case, the input tensor will be reversed in that particular axis
+ * \param slice_mode Specifies the slice mode
+ * \param name The name of the operation
+ * \param tag The tag to mark the operation
+ *
+ * \return A Tensor whose op member is the split operation
+ */
 inline Tensor strided_slice_with_axes(const Tensor& x, const Array<Integer>& begin,
                                       const Array<Integer>& end, const Array<Integer>& strides,
                                       const Array<Integer>& axes, std::string slice_mode = "end",
