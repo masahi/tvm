@@ -634,7 +634,7 @@ inline int64_t CanonicalizeIndex(int64_t index, int64_t extent, int64_t stride) 
   return std::min(std::max(index, begin_range), end_range);
 }
 
-inline std::tuple<std::vector<int64_t>, std::vector<int64_t>, std::vector<int64_t>> ToVec(
+inline std::tuple<std::vector<int64_t>, std::vector<int64_t>, std::vector<int64_t>> ConvertToVec(
     const Array<Integer>& begin, const Array<Integer>& end, const Array<Integer>& strides,
     std::string slice_mode) {
   std::vector<int64_t> stride_vec(strides.size(), 1);
@@ -740,7 +740,7 @@ inline Array<PrimExpr> StridedSliceOutputShape(
     const Array<Integer>& strides, const Array<Integer>& axes, const std::string& slice_mode) {
   ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size());
   std::vector<int64_t> begin_vec, end_vec, strides_vec;
-  std::tie(begin_vec, end_vec, strides_vec) = ToVec(begin, end, strides, slice_mode);
+  std::tie(begin_vec, end_vec, strides_vec) = ConvertToVec(begin, end, strides, slice_mode);
   auto begin_canonicalized = StridedSliceCanonicalizeBegin(ishape, begin_vec, strides_vec, axes,
                                                            begin[0]->dtype, slice_mode);
   return StridedSliceOutputShape(ishape, begin_vec, end_vec, strides_vec, axes, slice_mode,
@@ -771,7 +771,7 @@ inline Tensor strided_slice_with_axes(const Tensor& x, const Array<Integer>& beg
   ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size());
 
   std::vector<int64_t> begin_vec, end_vec, strides_vec;
-  std::tie(begin_vec, end_vec, strides_vec) = ToVec(begin, end, strides, slice_mode);
+  std::tie(begin_vec, end_vec, strides_vec) = ConvertToVec(begin, end, strides, slice_mode);
 
   auto begin_expr = StridedSliceCanonicalizeBegin(x->shape, begin_vec, strides_vec, axes,
                                                   begin[0]->dtype, slice_mode);
