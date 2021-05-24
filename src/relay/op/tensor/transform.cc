@@ -2445,147 +2445,24 @@ bool StridedSliceRel(const Array<Type>& types, int num_inputs, const Attrs& attr
     return false;
   }
 
-  auto dshape = data->shape;
-  int64_t num_axis = dshape.size();
+  ICHECK(param->begin) << "strided_slice recieved invalid begin " << param->begin;
+  ICHECK(param->end) << "strided_slice recieved invalid end " << param->end;
+  ICHECK(param->strides) << "strided_slice recieved invalid strides " << param->strides;
 
-  // calculate output shape
-  std::vector<IndexExpr> oshape(num_axis);
-  if (param->begin && param->end && param->strides) {
-    const bool has_axes(param->axes);
-    // stride will be set as 1 if slice mode is enabled
-    std::vector<int64_t> stride_vec(num_axis, 1);
-    if (param->slice_mode == "end") {
-      for (size_t i = 0; i < param->strides.value().size(); ++i) {
-        ICHECK(param->strides.value()[i].defined());
-        stride_vec[i] = param->strides.value()[i]->value;
-      }
-    }
-    const int64_t max_range = std::numeric_limits<int64_t>::max();
-    std::vector<int64_t> begin_vec;
-    for (size_t i = 0; i < param->begin.value().size(); ++i) {
-      if (!param->begin.value()[i].defined()) {
-        begin_vec.push_back(stride_vec[i] > 0 ? 0 : max_range);
-      } else {
-        begin_vec.push_back(param->begin.value()[i]->value);
-      }
-    }
-
-    std::vector<int64_t> end_vec;
-    for (size_t i = 0; i < param->end.value().size(); ++i) {
-      // allow end to be None
-      if (!param->end.value()[i].defined()) {
-        end_vec.push_back(stride_vec[i] < 0 ? 0 : max_range);
-      } else if (param->slice_mode == "size") {
-        if (param->end.value()[i]->value < 0) {
-          end_vec.push_back(max_range);
-        } else {
-          end_vec.push_back(begin_vec[i] + param->end.value()[i]->value);
-        }
-      } else if (param->slice_mode == "end") {
-        end_vec.push_back(param->end.value()[i]->value);
-      } else {
-        LOG(FATAL) << "Unsupported slice mode: " << param->slice_mode;
-      }
-    }
-
-    if (!has_axes) {
-      for (int64_t i = begin_vec.size(); i < num_axis; ++i) {
-        begin_vec.push_back(stride_vec[i] > 0 ? 0 : max_range);
-      }
-
-      for (int64_t i = end_vec.size(); i < num_axis; ++i) {
-        end_vec.push_back(stride_vec[i] < 0 ? 0 : max_range);
-      }
-
-      for (int64_t i = 0; i < num_axis; ++i) {
-        int64_t stride_v = stride_vec[i];
-        int64_t begin_v = begin_vec[i];
-        int64_t end_v = end_vec[i];
-
-        if ((stride_v == 1 && begin_v == 0 && end_v == max_range) ||
-            (stride_v == -1 && begin_v == max_range && end_v == 0)) {
-          // Quick path, do not slice this dimension.
-          oshape[i] = dshape[i];
-          continue;
-        }
-        // Normal path, require the shape to be concrete integer.
-        // Require concrete integer as symbolic inference of min/max
-        // can get complicated and not very helpful.
-        const int64_t* p_dim_size = tir::as_const_int(dshape[i]);
-        if (!p_dim_size) {
-          oshape[i] = dshape[i];
-          continue;
-        }
-        int64_t dim_size = p_dim_size[0];
-        begin_v = (begin_v < 0) ? dim_size + begin_v : begin_v;
-        end_v = (end_v < 0) ? dim_size + end_v : end_v;
-
-        int64_t slice_range, step;
-        if (stride_v < 0) {
-          if (end_v < -1) end_v = -1;
-          ICHECK_LE(end_v, begin_v) << "strided_slice get empty slice at axis " << i;
-          begin_v = std::min(dim_size - 1, begin_v);
-          slice_range = begin_v - end_v;
-          step = -stride_v;
-        } else {
-          if (begin_v < 0) begin_v = 0;
-          ICHECK_GE(stride_v, 0);
-          ICHECK_LE(begin_v, end_v) << "strided_slice get invalid slice at axis " << i;
-          end_v = std::min(dim_size, end_v);
-          slice_range = end_v - begin_v;
-          step = stride_v;
-        }
-        oshape[i] = tir::make_const(dshape[i].dtype(), (slice_range + step - 1) / step);
-      }
-    } else {
-      auto axes = param->axes.value();
-      for (int64_t i = 0; i < num_axis; ++i) {
-        oshape[i] = dshape[i];
-      }
-      for (int64_t i = 0; i < axes.size(); ++i) {
-        int64_t stride_v = stride_vec[i];
-        int64_t begin_v = begin_vec[i];
-        int64_t end_v = end_vec[i];
-
-        if ((stride_v == 1 && begin_v == 0 && end_v == max_range) ||
-            (stride_v == -1 && begin_v == max_range && end_v == 0)) {
-          // Quick path, do not slice this dimension.
-          continue;
-        }
-        // Normal path, require the shape to be concrete integer.
-        // Require concrete integer as symbolic inference of min/max
-        // can get complicated and not very helpful.
-        const int64_t* p_dim_size = tir::as_const_int(dshape[axes[i]]);
-        if (!p_dim_size) {
-          continue;
-        }
-        int64_t dim_size = p_dim_size[0];
-        begin_v = (begin_v < 0) ? dim_size + begin_v : begin_v;
-        end_v = (end_v < 0) ? dim_size + end_v : end_v;
-
-        int64_t slice_range, step;
-        if (stride_v < 0) {
-          if (end_v < -1) end_v = -1;
-          ICHECK_LE(end_v, begin_v) << "strided_slice get empty slice at axis " << i;
-          begin_v = std::min(dim_size - 1, begin_v);
-          slice_range = begin_v - end_v;
-          step = -stride_v;
-        } else {
-          if (begin_v < 0) begin_v = 0;
-          ICHECK_GE(stride_v, 0);
-          ICHECK_LE(begin_v, end_v) << "strided_slice get invalid slice at axis " << i;
-          end_v = std::min(dim_size, end_v);
-          slice_range = end_v - begin_v;
-          step = stride_v;
-        }
-        oshape[axes[i]] = tir::make_const(dshape[axes[i]].dtype(), (slice_range + step - 1) / step);
-      }
-    }
+  const size_t src_tensor_dim = static_cast<size_t>(data->shape.size());
+  Array<Integer> axes;
+  if (param->axes) {
+    axes = param->axes.value();
   } else {
-    ICHECK(param->begin) << "strided_slice recieved invalid begin " << param->begin;
-    ICHECK(param->end) << "strided_slice recieved invalid end " << param->end;
-    ICHECK(param->strides) << "strided_slice recieved invalid strides " << param->strides;
+    for (size_t i = 0; i < src_tensor_dim; ++i) axes.push_back(i);
   }
+  auto begin = param->begin.value();
+  auto end = param->end.value();
+  auto strides = param->strides.value();
+  ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size())
+      << "Axes, begin, end, and strides must have the same length";
+  auto oshape =
+      topi::StridedSliceOutputShape(data->shape, begin, end, strides, axes, param->slice_mode);
   reporter->Assign(types[1], TensorType(oshape, data->dtype));
   return true;
 }
