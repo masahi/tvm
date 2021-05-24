@@ -758,10 +758,10 @@ inline Tensor strided_slice(const Tensor& x, const Array<Integer>& begin, const 
   Array<Integer> strides_full(strides);
 
   const IntImm one = IntImm(DataType::Int(64), 1);
-  const IntImm zero = IntImm(DataType::Int(64), 1);
+  const IntImm zero = IntImm(DataType::Int(64), 0);
   const IntImm max_range = IntImm(DataType::Int(64), std::numeric_limits<int64_t>::max());
 
-  for (size_t i = strides_full.size(); i < src_tensor_dim; ++i) {
+  for (size_t i = strides.size(); i < src_tensor_dim; ++i) {
     strides_full.push_back(one);
   }
   for (size_t i = begin.size(); i < src_tensor_dim; ++i) {
