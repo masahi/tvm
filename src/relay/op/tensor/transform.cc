@@ -2457,8 +2457,9 @@ bool StridedSliceRel(const Array<Type>& types, int num_inputs, const Attrs& attr
   Array<Integer> axes;
   if (param->axes) {
     axes = param->axes.value();
-    ICHECK(axes.size() == begin.size() && axes.size() == end.size() && axes.size() == strides.size())
-      << "axes, begin, end, and strides must have the same length";
+    ICHECK(axes.size() == begin.size() && axes.size() == end.size() &&
+           axes.size() == strides.size())
+        << "axes, begin, end, and strides must have the same length";
   } else {
     for (size_t i = 0; i < src_tensor_dim; ++i) axes.push_back(i);
 
