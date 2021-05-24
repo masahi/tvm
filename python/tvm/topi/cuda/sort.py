@@ -962,7 +962,6 @@ def topk(data, k=1, axis=-1, ret_type="both", is_ascend=False, dtype="int64"):
             end.append(dshape[i])
     if ret_type == "both":
         values_out, indices_out = output
-        print("end:", end, k)
         values_out = strided_slice(values_out, beg, end, strides)
         indices_out = strided_slice(indices_out, beg, end, strides)
         output = [values_out, indices_out]
