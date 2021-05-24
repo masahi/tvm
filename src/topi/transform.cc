@@ -183,11 +183,7 @@ TVM_REGISTER_GLOBAL("topi.strided_slice").set_body([](TVMArgs args, TVMRetValue*
     Array<Integer> begin_static = args[1];
     Array<Integer> end_static = args[2];
     Array<Integer> strides_static = args[3];
-    if (IsConstIntArray(x->shape)) {
-      *rv = strided_slice(x, begin_static, end_static, strides_static, slice_mode);
-    } else {
-      *rv = strided_slice_dynamic_input(x, begin_static, end_static, strides_static, slice_mode);
-    }
+    *rv = strided_slice(x, begin_static, end_static, strides_static, slice_mode);
   } else {
     *rv = dynamic_strided_slice(x, begin, end, strides);
   }

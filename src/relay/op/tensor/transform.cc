@@ -2739,9 +2739,6 @@ Array<te::Tensor> StridedSliceCompute(const Attrs& attrs, const Array<te::Tensor
     auto axes = param->axes.value();
     return Array<te::Tensor>{
         topi::strided_slice_with_axes(inputs[0], begin, end, strides, axes, param->slice_mode)};
-  } else if (IsDynamic(out_type)) {
-    return Array<te::Tensor>{
-        topi::strided_slice_dynamic_input(inputs[0], begin, end, strides, param->slice_mode)};
   }
   return Array<te::Tensor>{topi::strided_slice(inputs[0], begin, end, strides, param->slice_mode)};
 }
