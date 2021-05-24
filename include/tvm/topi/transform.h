@@ -704,7 +704,8 @@ inline Array<PrimExpr> StridedSliceOutputShape(const Array<PrimExpr>& ishape, co
                                                const std::vector<int64_t>& end,
                                                const std::vector<int64_t>& strides,
                                                const Array<Integer>& axes, std::string slice_mode,
-                                               const Array<PrimExpr>& begin_canonicalized) {
+                                               const Array<PrimExpr>& begin_canonicalized,
+					       bool use_any=false) {
   size_t src_tensor_dim = ishape.size();
   Array<PrimExpr> out_shape;
   for (size_t i = 0; i < src_tensor_dim; ++i) {
@@ -723,6 +724,8 @@ inline Array<PrimExpr> StridedSliceOutputShape(const Array<PrimExpr>& ishape, co
       ICHECK(strides[i] < 0 ? (end_i <= begin_i) : (begin_i <= end_i))
           << ": Input [Begin=" << begin[i] << ", End=" << end[i] << "] is invalid for axis=" << i;
       out_shape.Set(axes[i], cast(out_shape[i].dtype(), PrimExpr(slice_size)));
+    } else if (use_any) {
+      out_shape.Set(axes[i], tvm::tir::Any());
     } else {
       out_shape.Set(axes[i], tvm::tir::Var("dim", out_shape[i]->dtype));
     }
@@ -742,7 +745,7 @@ inline Array<PrimExpr> StridedSliceOutputShape(const Array<PrimExpr>& ishape, co
   auto begin_canonicalized =
       StridedSliceCanonicalizeBegin(ishape, begin_vec, strides_vec, axes, begin[0]->dtype, slice_mode);
   return StridedSliceOutputShape(ishape, begin_vec, end_vec, strides_vec, axes, slice_mode,
-                                 begin_canonicalized);
+                                 begin_canonicalized, true);
 }
 
 
@@ -775,7 +778,7 @@ inline Tensor strided_slice_with_axes(const Tensor& x, const Array<Integer>& beg
   auto begin_expr =
       StridedSliceCanonicalizeBegin(x->shape, begin_vec, strides_vec, axes, begin[0]->dtype, slice_mode);
   auto out_shape =
-      StridedSliceOutputShape(x->shape, begin_vec, end_vec, strides_vec, axes, slice_mode, begin_expr);
+    StridedSliceOutputShape(x->shape, begin_vec, end_vec, strides_vec, axes, slice_mode, begin_expr);
 
   return te::compute(
       out_shape,

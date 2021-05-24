@@ -2478,7 +2478,6 @@ bool StridedSliceRel(const Array<Type>& types, int num_inputs, const Attrs& attr
   }
   auto oshape =
       topi::StridedSliceOutputShape(data->shape, begin, end, strides, axes, param->slice_mode);
-  LOG(INFO) << "oshape: " << oshape;
   reporter->Assign(types[1], TensorType(oshape, data->dtype));
   return true;
 }
