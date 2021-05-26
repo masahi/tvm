@@ -2457,6 +2457,7 @@ bool StridedSliceRel(const Array<Type>& types, int num_inputs, const Attrs& attr
   Array<Integer> axes;
   if (param->axes) {
     axes = param->axes.value();
+    LOG(INFO) << axes.size() << ", " << begin.size() << ", " << end.size() << ", " << strides.size();
     ICHECK(axes.size() == begin.size() && axes.size() == end.size() &&
            axes.size() == strides.size())
         << "axes, begin, end, and strides must have the same length";
@@ -2537,34 +2538,54 @@ Array<Array<Layout>> StridedSliceInferCorrectLayout(const Attrs& attrs,
         // Not support NHW4c -> NCHW
         return {{Layout::Undef()}, {Layout::Undef()}};
       } else {
-        for (size_t i = 0; i < new_layout_name.size(); ++i) {
-          auto index = layout.IndexOf(new_layout[i]);
-          if (index == -1) {
-            return {{Layout::Undef()}, {Layout::Undef()}};
-          }
+        if (params->axes) {
+          auto axes = params->axes.value();
+          new_begin.resize(axes.size());
+          new_end.resize(axes.size());
+          new_strides.resize(axes.size());
+          Array<Integer> new_axes;
 
-          size_t new_index = static_cast<size_t>(index);
-          int64_t bg, ed, st;
-          if (strides.defined() && new_index < strides.size() && strides[new_index].defined()) {
-            st = strides[new_index]->value;
-          } else {
-            st = 1;
+          for (size_t i = 0; i < axes.size(); ++i) {
+            auto old_idx = axes[i];
+            auto new_idx = new_layout.IndexOf(layout[old_idx]);
+            new_begin.Set(new_idx, begin[i]);
+            new_end.Set(new_idx, end[i]);
+            new_strides.Set(new_idx, strides[i]);
+            new_axes.push_back(new_idx);
           }
-          if (new_index < begin.size() && begin[new_index].defined()) {
-            bg = begin[new_index]->value;
-          } else {
-            bg = 0;
-          }
-          if (new_index < end.size() && end[new_index].defined()) {
-            ed = end[new_index]->value;
-          } else {
-            ed = shape[new_index].as<IntImmNode>()->value;
-          }
+          params->axes = new_axes;
 
-          new_begin.push_back(IntImm(begin[0]->dtype, bg));
-          new_end.push_back(IntImm(end[0]->dtype, ed));
-          new_strides.push_back(IntImm(strides[0]->dtype, st));
+        } else {
+          for (size_t i = 0; i < new_layout_name.size(); ++i) {
+            auto index = layout.IndexOf(new_layout[i]);
+            if (index == -1) {
+              return {{Layout::Undef()}, {Layout::Undef()}};
+            }
+
+            size_t new_index = static_cast<size_t>(index);
+            int64_t bg, ed, st;
+            if (strides.defined() && new_index < strides.size() && strides[new_index].defined()) {
+              st = strides[new_index]->value;
+            } else {
+              st = 1;
+            }
+            if (new_index < begin.size() && begin[new_index].defined()) {
+              bg = begin[new_index]->value;
+            } else {
+              bg = 0;
+            }
+            if (new_index < end.size() && end[new_index].defined()) {
+              ed = end[new_index]->value;
+            } else {
+              ed = shape[new_index].as<IntImmNode>()->value;
+            }
+
+            new_begin.push_back(IntImm(begin[0]->dtype, bg));
+            new_end.push_back(IntImm(end[0]->dtype, ed));
+            new_strides.push_back(IntImm(strides[0]->dtype, st));
+          }
         }
+
         params->begin = new_begin;
         params->end = new_end;
         params->strides = new_strides;
