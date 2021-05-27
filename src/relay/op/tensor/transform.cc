@@ -2457,7 +2457,6 @@ bool StridedSliceRel(const Array<Type>& types, int num_inputs, const Attrs& attr
   Array<Integer> axes;
   if (param->axes) {
     axes = param->axes.value();
-    LOG(INFO) << axes.size() << ", " << begin.size() << ", " << end.size() << ", " << strides.size();
     ICHECK(axes.size() == begin.size() && axes.size() == end.size() &&
            axes.size() == strides.size())
         << "axes, begin, end, and strides must have the same length";
@@ -2540,17 +2539,14 @@ Array<Array<Layout>> StridedSliceInferCorrectLayout(const Attrs& attrs,
       } else {
         if (params->axes) {
           auto axes = params->axes.value();
-          new_begin.resize(axes.size());
-          new_end.resize(axes.size());
-          new_strides.resize(axes.size());
           Array<Integer> new_axes;
 
           for (size_t i = 0; i < axes.size(); ++i) {
             auto old_idx = axes[i];
             auto new_idx = new_layout.IndexOf(layout[old_idx]);
-            new_begin.Set(new_idx, begin[i]);
-            new_end.Set(new_idx, end[i]);
-            new_strides.Set(new_idx, strides[i]);
+            new_begin.push_back(begin[i]);
+            new_end.push_back(end[i]);
+            new_strides.push_back(strides[i]);
             new_axes.push_back(new_idx);
           }
           params->axes = new_axes;
@@ -2592,44 +2588,79 @@ Array<Array<Layout>> StridedSliceInferCorrectLayout(const Attrs& attrs,
         layout = new_layout;
       }
     } else {
-      for (size_t i = 0; i < begin.size(); i++) {
-        const LayoutAxis& axis = layout[i];
-        if (!axis.IsPrimal()) {
-          // original layout that contains splitted axes is not supported
-          return {{Layout::Undef()}, {Layout::Undef()}};
-        }
-        auto factor = new_layout.FactorOf(axis);
-        if (factor == -1) {
-          new_begin.push_back(IntImm(begin[i]->dtype, begin[i]));
-          new_end.push_back(IntImm(end[i]->dtype, end[i]));
-        } else {
-          if (strides.defined() && i < strides.size()) {
-            auto stride = strides[i];
-            // arbitrary stride is not supported
-            if (stride.defined() && stride->value != 1) {
-              return {{Layout::Undef()}, {Layout::Undef()}};
-            }
-          }
-          int64_t bg = begin[i].defined() ? begin[i]->value : 0;
-          int64_t ed;
-          if (!end[i].defined()) {
-            ed = shape[i].as<IntImmNode>()->value;
-          } else if (params->slice_mode == "size") {
-            if (end[i]->value < 0) {
-              ed = shape[i].as<IntImmNode>()->value;
-            } else {
-              ed = bg + end[i]->value;
-            }
-          } else {
-            ed = end[i]->value;
-          }
+      if (params->axes) {
+        auto axes = params->axes.value();
+        Array<Integer> new_axes;
 
-          if (bg % factor || ed % factor) {
-            // transform to original layout
+        for (size_t i = 0; i < axes.size(); ++i) {
+          auto old_idx = axes[i];
+          auto new_idx = new_layout.IndexOf(layout[old_idx]);
+          new_axes.push_back(new_idx);
+
+          const LayoutAxis& axis = layout[old_idx];
+          if (!axis.IsPrimal()) {
+            // original layout that contains splitted axes is not supported
             return {{Layout::Undef()}, {Layout::Undef()}};
           }
-          new_begin.push_back(IntImm(begin[0]->dtype, (bg / factor)));
-          new_end.push_back(IntImm(end[0]->dtype, (ed / factor)));
+
+          auto factor = new_layout.FactorOf(axis);
+
+          if (factor == -1) {
+            new_begin.push_back(begin[i]);
+            new_end.push_back(end[i]);
+          } else {
+            int64_t bg = begin[i];
+            int64_t ed = end[i];
+            if (bg % factor || ed % factor) {
+              // transform to original layout
+              return {{Layout::Undef()}, {Layout::Undef()}};
+            }
+            new_begin.push_back(IntImm(begin[0]->dtype, (bg / factor)));
+            new_end.push_back(IntImm(end[0]->dtype, (ed / factor)));
+          }
+        }
+        params->axes = new_axes;
+
+      } else {
+        for (size_t i = 0; i < begin.size(); i++) {
+          const LayoutAxis& axis = layout[i];
+          if (!axis.IsPrimal()) {
+            // original layout that contains splitted axes is not supported
+            return {{Layout::Undef()}, {Layout::Undef()}};
+          }
+          auto factor = new_layout.FactorOf(axis);
+          if (factor == -1) {
+            new_begin.push_back(IntImm(begin[i]->dtype, begin[i]));
+            new_end.push_back(IntImm(end[i]->dtype, end[i]));
+          } else {
+            if (strides.defined() && i < strides.size()) {
+              auto stride = strides[i];
+              // arbitrary stride is not supported
+              if (stride.defined() && stride->value != 1) {
+                return {{Layout::Undef()}, {Layout::Undef()}};
+              }
+            }
+            int64_t bg = begin[i].defined() ? begin[i]->value : 0;
+            int64_t ed;
+            if (!end[i].defined()) {
+              ed = shape[i].as<IntImmNode>()->value;
+            } else if (params->slice_mode == "size") {
+              if (end[i]->value < 0) {
+                ed = shape[i].as<IntImmNode>()->value;
+              } else {
+                ed = bg + end[i]->value;
+              }
+            } else {
+              ed = end[i]->value;
+            }
+
+            if (bg % factor || ed % factor) {
+              // transform to original layout
+              return {{Layout::Undef()}, {Layout::Undef()}};
+            }
+            new_begin.push_back(IntImm(begin[0]->dtype, (bg / factor)));
+            new_end.push_back(IntImm(end[0]->dtype, (ed / factor)));
+          }
         }
       }
 
