@@ -734,6 +734,7 @@ def _collect_selected_indices_and_scores_ir(
     selected_scores,
     num_detections,
     row_offsets,
+    num_total_detections,
     collected_indices,
     collected_scores,
 ):
@@ -746,6 +747,7 @@ def _collect_selected_indices_and_scores_ir(
     selected_scores = ib.buffer_ptr(selected_scores)
     num_detections = ib.buffer_ptr(num_detections)
     row_offsets = ib.buffer_ptr(row_offsets)
+    num_total_detections = ib.buffer_ptr(num_total_detections)
     collected_indices = ib.buffer_ptr(collected_indices)
     collected_scores = ib.buffer_ptr(collected_scores)
     zero = cast(0, "int64")
@@ -756,23 +758,22 @@ def _collect_selected_indices_and_scores_ir(
         class_id = i % num_class
 
         with ib.for_range(0, num_boxes, name="j") as j:
-            offset = j + class_id * num_boxes
-            collected_indices[batch_id, offset, 0] = zero
-            collected_indices[batch_id, offset, 1] = zero
-            collected_scores[batch_id, offset] = -1.0
-
-    with ib.for_range(0, batch_size * num_class, name="i", kind="parallel") as i:
-        i = cast(i, "int64")
-        batch_id = i // num_class
-        class_id = i % num_class
-
-        with ib.for_range(0, num_boxes, name="j") as j:
-            offset = row_offsets[batch_id, class_id]
-
             with ib.if_scope(j < num_detections[batch_id, class_id]):
-                collected_indices[batch_id, offset + j, 0] = class_id
-                collected_indices[batch_id, offset + j, 1] = cast(selected_indices[i, j], "int64")
-                collected_scores[batch_id, offset + j] = selected_scores[i, j]
+                offset = row_offsets[batch_id, class_id] + j
+                collected_indices[batch_id, offset, 0] = class_id
+                collected_indices[batch_id, offset, 1] = cast(selected_indices[i, j], "int64")
+                collected_scores[batch_id, offset] = selected_scores[i, j]
+            with ib.else_scope():
+                offset = (
+                    num_total_detections[batch_id]
+                    + class_id * num_boxes
+                    - row_offsets[batch_id, class_id]
+                    + j
+                    - num_detections[batch_id, class_id]
+                )
+                collected_indices[batch_id, offset, 0] = zero
+                collected_indices[batch_id, offset, 1] = zero
+                collected_scores[batch_id, offset] = -1.0
 
     return ib.get()
 
@@ -862,6 +863,7 @@ def all_class_non_max_suppression(
         selected_scores,
         num_detections_per_batch,
         row_offsets,
+        num_total_detections,
         _collect_selected_indices_and_scores_ir,
     )
     topk_indices = topk(selected_scores, k=max_total_size, axis=1, ret_type="indices")
