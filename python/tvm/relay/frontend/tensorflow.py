@@ -796,8 +796,7 @@ def _nms(return_scores=False):
 def _combined_nms():
     def all_class_impl(
         batch_size,
-        num_boxes,
-        num_classes,
+        max_output_boxes_per_batch,
         boxes,
         scores,
         max_output_boxes_per_class,
@@ -805,7 +804,6 @@ def _combined_nms():
         score_threshold,
         max_total_size,
         clip_boxes,
-        mod,
     ):
         (
             selected_indices,
@@ -835,14 +833,15 @@ def _combined_nms():
         )
 
         # TODO: support dynamic num_boxes
-        max_output_boxes = num_boxes * num_classes
-        if max_output_boxes < max_total_size:
+        if max_output_boxes_per_batch < max_total_size:
             arange = _op.arange(
                 _op.const(0, dtype="int64"),
-                _op.const(max_output_boxes, dtype="int64"),
+                _op.const(max_output_boxes_per_batch, dtype="int64"),
                 dtype="int64",
             )
-            pad = _op.full(_op.const(0, dtype="int64"), (max_total_size - max_output_boxes,))
+            pad = _op.full(
+                _op.const(0, dtype="int64"), (max_total_size - max_output_boxes_per_batch,)
+            )
             topk_indices = _op.tile(_op.concatenate([arange, pad], 0), tile_batch_reps)
             nmsed_scores = _op.gather(selected_scores, 1, topk_indices)
             nmsed_scores = nmsed_scores * valid_mask
@@ -898,10 +897,10 @@ def _combined_nms():
         if q == 1:
             boxes = _op.squeeze(boxes, axis=[2])
             scores_trans = _op.transpose(scores, [0, 2, 1])
+            max_output_boxes_per_batch = num_anchors * num_classes
             return all_class_impl(
                 batch_size,
-                num_anchors,
-                num_classes,
+                max_output_boxes_per_batch,
                 boxes,
                 scores_trans,
                 max_output_size,
@@ -909,7 +908,6 @@ def _combined_nms():
                 score_threshold,
                 max_total_size.data.numpy().item(),
                 attr["clip_boxes"],
-                mod,
             )
 
         boxes = _op.reshape(boxes, newshape=[batch_size, num_anchors * num_classes, 4])
