@@ -804,7 +804,11 @@ def _combined_nms():
         clip_boxes,
         mod,
     ):
-        indices, num_detections = _op.vision.all_class_non_max_suppression(
+        (
+            selected_indices,
+            selected_scores,
+            num_detections,
+        ) = _op.vision.all_class_non_max_suppression(
             boxes,
             scores,
             max_output_boxes_per_class,
@@ -813,6 +817,11 @@ def _combined_nms():
             max_total_size,
             output_format="tensorflow",
         )
+        topk_indices = _op.topk(selected_scores, k=max_total_size, axis=1, ret_type="indices")
+        topk_indices = _op.expand_dims(topk_indices, axis=0)
+        indices = _op.gather_nd(selected_indices, topk_indices, batch_dims=1)
+        num_detections = _op.minimum(num_detections, _op.const(max_total_size, dtype="int64"))
+
         nmsed_box_indices = _op.take(indices, _op.const(1), axis=2)
         nmsed_classes = _op.cast(_op.take(indices, _op.const(0), axis=2), "float32")
         nmsed_boxes = _op.gather_nd(boxes, _op.expand_dims(nmsed_box_indices, axis=0), batch_dims=1)
