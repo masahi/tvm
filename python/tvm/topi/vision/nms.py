@@ -829,23 +829,6 @@ def all_class_non_max_suppression(
 
     valid_count = _get_valid_box_count(sorted_scores, score_threshold)
 
-    if output_format == "onnx":
-        selected_indices, num_detections = run_all_class_nms(
-            boxes,
-            sorted_scores,
-            sorted_indices,
-            valid_count,
-            max_output_boxes_per_class,
-            iou_threshold,
-            _nms_loop,
-        )
-        row_offsets = cumsum(num_detections, exclusive=True, dtype="int64")
-        num_total_detections = reduction.sum(cast(num_detections, "int64"), axis=1)
-        selected_indices = collect_selected_indices(
-            num_class, selected_indices, num_detections, row_offsets, _collect_selected_indices_ir
-        )
-        return [selected_indices, num_total_detections]
-
     selected_indices, selected_scores, num_detections = run_all_class_nms(
         boxes,
         sorted_scores,
@@ -854,8 +837,18 @@ def all_class_non_max_suppression(
         max_output_boxes_per_class,
         iou_threshold,
         _nms_loop,
-        return_scores=True,
+        return_scores=(output_format == "tensorflow"),
     )
+
+    if output_format == "onnx":
+        row_offsets = cumsum(num_detections, exclusive=True, dtype="int64")
+        num_total_detections = reduction.sum(cast(num_detections, "int64"), axis=1)
+
+        selected_indices = collect_selected_indices(
+            num_class, selected_indices, num_detections, row_offsets, _collect_selected_indices_ir
+        )
+        return [selected_indices, num_total_detections]
+
     num_detections_per_batch = reshape(num_detections, (batch, num_class))
     row_offsets = cumsum(num_detections_per_batch, exclusive=True, dtype="int64", axis=1)
     num_total_detections = reduction.sum(cast(num_detections_per_batch, "int64"), axis=1)
