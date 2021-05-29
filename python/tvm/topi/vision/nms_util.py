@@ -108,23 +108,11 @@ def collect_selected_indices(num_class, selected_indices, num_detections, row_of
         first, in descending of scores, followed by boxes from batch 0, class 1 etc.
     """
     batch_class, num_boxes = selected_indices.shape
-
-    selected_indices_buf = tvm.tir.decl_buffer(
-        selected_indices.shape, selected_indices.dtype, "selected_indices_buf", data_alignment=8
-    )
-    num_detections_buf = tvm.tir.decl_buffer(
-        num_detections.shape, num_detections.dtype, "num_detections_buf", data_alignment=8
-    )
-    row_offsets_buf = tvm.tir.decl_buffer(
-        row_offsets.shape, row_offsets.dtype, "row_offsets_buf", data_alignment=8
-    )
-
     return te.extern(
         [(batch_class * num_boxes, 3)],
         [selected_indices, num_detections, row_offsets],
         lambda ins, outs: ir(num_class, ins[0], ins[1], ins[2], outs[0]),
         dtype=["int64"],
-        in_buffers=[selected_indices_buf, num_detections_buf, row_offsets_buf],
         name="collect_indices",
         tag="collect_indices",
     )
@@ -135,40 +123,13 @@ def collect_selected_indices_and_scores(
 ):
     batch_size, num_class = row_offsets.shape
     num_boxes = selected_indices.shape[1]
-
-    selected_indices_buf = tvm.tir.decl_buffer(
-        selected_indices.shape, selected_indices.dtype, "selected_indices_buf", data_alignment=8
-    )
-    selected_scores_buf = tvm.tir.decl_buffer(
-        selected_scores.shape, selected_scores.dtype, "selected_scores_buf", data_alignment=8
-    )
-    num_detections_buf = tvm.tir.decl_buffer(
-        num_detections.shape, num_detections.dtype, "num_detections_buf", data_alignment=8
-    )
-    row_offsets_buf = tvm.tir.decl_buffer(
-        row_offsets.shape, row_offsets.dtype, "row_offsets_buf", data_alignment=8
-    )
-    num_total_detections_buf = tvm.tir.decl_buffer(
-        num_total_detections.shape,
-        num_total_detections.dtype,
-        "num_total_detections_buf",
-        data_alignment=8,
-    )
-
     return te.extern(
         [(batch_size, num_class * num_boxes, 2), (batch_size, num_class * num_boxes)],
         [selected_indices, selected_scores, num_detections, row_offsets, num_total_detections],
         lambda ins, outs: ir(ins[0], ins[1], ins[2], ins[3], ins[4], outs[0], outs[1]),
         dtype=["int64", "float32"],
-        in_buffers=[
-            selected_indices_buf,
-            selected_scores_buf,
-            num_detections_buf,
-            row_offsets_buf,
-            num_total_detections_buf,
-        ],
-        name="collect_indices",
-        tag="collect_indices",
+        name="collect_indices_and_scores",
+        tag="collect_indices_and_scores",
     )
 
 
@@ -294,17 +255,6 @@ def run_all_class_nms(
     batch_class = sorted_scores.shape[0]
     num_class = batch_class // batch
 
-    boxes_buf = tvm.tir.decl_buffer(boxes.shape, boxes.dtype, "boxes_buf", data_alignment=8)
-    sorted_scores_buf = tvm.tir.decl_buffer(
-        sorted_scores.shape, sorted_scores.dtype, "sorted_scores_buf", data_alignment=8
-    )
-    sorted_indices_buf = tvm.tir.decl_buffer(
-        sorted_indices.shape, sorted_indices.dtype, "sorted_indices_buf", data_alignment=8
-    )
-    valid_count_buf = tvm.tir.decl_buffer(
-        valid_count.shape, "int32", "valid_count_buf", data_alignment=4
-    )
-
     if return_scores is False:
         selected_indices, num_detections = te.extern(
             [(batch_class, num_boxes), (1, batch_class)],
@@ -325,12 +275,6 @@ def run_all_class_nms(
                 nms_loop,
             ),
             dtype=["int32", "int32"],
-            in_buffers=[
-                boxes_buf,
-                sorted_scores_buf,
-                sorted_indices_buf,
-                valid_count_buf,
-            ],
             name="all_class_nms",
             tag="all_class_nms",
         )
@@ -355,12 +299,6 @@ def run_all_class_nms(
             nms_loop,
         ),
         dtype=["int32", "float32", "int32"],
-        in_buffers=[
-            boxes_buf,
-            sorted_scores_buf,
-            sorted_indices_buf,
-            valid_count_buf,
-        ],
         name="all_class_nms",
         tag="all_class_nms",
     )
