@@ -131,7 +131,7 @@ def collect_selected_indices(num_class, selected_indices, num_detections, row_of
 
 
 def collect_selected_indices_and_scores(
-    selected_indices, selected_scores, num_detections, row_offsets, ir
+    selected_indices, selected_scores, num_detections, row_offsets, num_total_detections, ir
 ):
     batch_size, num_class = row_offsets.shape
     num_boxes = selected_indices.shape[1]
@@ -148,13 +148,25 @@ def collect_selected_indices_and_scores(
     row_offsets_buf = tvm.tir.decl_buffer(
         row_offsets.shape, row_offsets.dtype, "row_offsets_buf", data_alignment=8
     )
+    num_total_detections_buf = tvm.tir.decl_buffer(
+        num_total_detections.shape,
+        num_total_detections.dtype,
+        "num_total_detections_buf",
+        data_alignment=8,
+    )
 
     return te.extern(
         [(batch_size, num_class * num_boxes, 2), (batch_size, num_class * num_boxes)],
-        [selected_indices, selected_scores, num_detections, row_offsets],
-        lambda ins, outs: ir(ins[0], ins[1], ins[2], ins[3], outs[0], outs[1]),
+        [selected_indices, selected_scores, num_detections, row_offsets, num_total_detections],
+        lambda ins, outs: ir(ins[0], ins[1], ins[2], ins[3], ins[4], outs[0], outs[1]),
         dtype=["int64", "float32"],
-        in_buffers=[selected_indices_buf, selected_scores_buf, num_detections_buf, row_offsets_buf],
+        in_buffers=[
+            selected_indices_buf,
+            selected_scores_buf,
+            num_detections_buf,
+            row_offsets_buf,
+            num_total_detections_buf,
+        ],
         name="collect_indices",
         tag="collect_indices",
     )
