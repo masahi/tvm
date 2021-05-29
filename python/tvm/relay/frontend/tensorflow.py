@@ -818,7 +818,6 @@ def _combined_nms():
             max_total_size,
             output_format="tensorflow",
         )
-        num_detections = _op.minimum(num_detections, _op.const(max_total_size, dtype="int64"))
         box_range = _op.arange(
             _op.const(0, dtype="int64"), _op.const(max_total_size, dtype="int64"), dtype="int64"
         )

@@ -23,7 +23,8 @@ from tvm.contrib import nvcc
 from tvm.contrib.thrust import can_use_thrust, can_use_rocthrust
 from tvm.ir import register_intrin_lowering
 from tvm.tir import if_then_else
-from .sort import argsort, argsort_thrust, topk
+from .sort import argsort, argsort_thrust
+from ..broadcast import minimum
 from .scan import exclusive_scan
 from ..utils import ceil_div
 from ..math import cast
@@ -1132,5 +1133,7 @@ def all_class_non_max_suppression(
         num_total_detections,
         _collect_selected_indices_and_scores_ir,
     )
+
+    num_total_detections = minimum(num_total_detections, max_total_size)
 
     return [selected_indices, selected_scores, num_total_detections]
