@@ -139,6 +139,7 @@ def _all_class_nms_ir(
     iou_threshold,
     max_output_size_per_class,
     box_indices,
+    selected_scores,
     num_valid_boxes,
     nms_loop,
 ):
@@ -149,6 +150,9 @@ def _all_class_nms_ir(
     valid_count = ib.buffer_ptr(valid_count)
     box_indices = ib.buffer_ptr(box_indices)
     num_valid_boxes = ib.buffer_ptr(num_valid_boxes)
+
+    if selected_scores is not None:
+        selected_scores = ib.buffer_ptr(selected_scores)
 
     if isinstance(iou_threshold, float):
         iou_threshold = tvm.tir.FloatImm("float32", iou_threshold)
@@ -170,6 +174,9 @@ def _all_class_nms_ir(
     def on_new_valid_box(ib, tid, num_current_valid_box, i, j):
         with ib.if_scope(tid + 0 == 0):
             box_indices[i, num_current_valid_box] = sorted_indices[i, j]
+
+            if selected_scores is not None:
+                selected_scores[i, num_current_valid_box] = sorted_scores[i, j]
 
     def on_new_invalidated_box(*_):
         pass
@@ -201,6 +208,7 @@ def run_all_class_nms(
     max_output_size_per_class,
     iou_threshold,
     nms_loop,
+    return_scores=False
 ):
     """The core all class NMS routine
 
@@ -253,8 +261,38 @@ def run_all_class_nms(
         valid_count.shape, "int32", "valid_count_buf", data_alignment=4
     )
 
+    if return_scores is False:
+        return te.extern(
+            [(batch_class, num_boxes), (1, batch_class)],
+            [boxes, sorted_scores, sorted_indices, valid_count],
+            lambda ins, outs: _all_class_nms_ir(
+                ins[0],  # boxes
+                ins[1],  # sorted_scores
+                ins[2],  # sorted_indices
+                ins[3],  # valid_count
+                batch_class,
+                num_class,
+                num_boxes,
+                iou_threshold,
+                max_output_size_per_class,
+                outs[0],  # box_indices
+                None,     # scores
+                outs[1],  # num_selected_boxes
+                nms_loop,
+            ),
+            dtype=["int32", "int32"],
+            in_buffers=[
+                boxes_buf,
+                sorted_scores_buf,
+                sorted_indices_buf,
+                valid_count_buf,
+            ],
+            name="all_class_nms",
+            tag="all_class_nms",
+        )
+
     return te.extern(
-        [(batch_class, num_boxes), (1, batch_class)],
+        [(batch_class, num_boxes), (batch_class, num_boxes), (1, batch_class)],
         [boxes, sorted_scores, sorted_indices, valid_count],
         lambda ins, outs: _all_class_nms_ir(
             ins[0],  # boxes
@@ -267,10 +305,11 @@ def run_all_class_nms(
             iou_threshold,
             max_output_size_per_class,
             outs[0],  # box_indices
-            outs[1],  # num_selected_boxes
+            outs[1],  # selected scores
+            outs[2],  # num_selected_boxes
             nms_loop,
         ),
-        dtype=["int32", "int32"],
+        dtype=["int32", "float32", "int32"],
         in_buffers=[
             boxes_buf,
             sorted_scores_buf,

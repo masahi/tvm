@@ -23,11 +23,13 @@ from tvm.contrib import nvcc
 from tvm.contrib.thrust import can_use_thrust, can_use_rocthrust
 from tvm.ir import register_intrin_lowering
 from tvm.tir import if_then_else
-from .sort import argsort, argsort_thrust
+from .sort import argsort, argsort_thrust, topk
 from .scan import exclusive_scan
 from ..utils import ceil_div
 from ..math import cast
-from ..transform import reshape
+from .. import reduction
+from ..broadcast import minimum
+from ..transform import reshape, strided_slice, gather_nd, expand_dims, squeeze
 from ..vision.nms_util import (
     calculate_overlap,
     binary_search,
@@ -988,8 +990,97 @@ def _collect_selected_indices_ir(num_class, selected_indices, num_detections, ro
     return ib.get()
 
 
+def _collect_selected_indices_tf_ir(
+    num_class,
+    selected_indices,
+    selected_scores,
+    num_detections,
+    row_offsets,
+    collected_indices,
+    collected_scores,
+):
+    batch_size, num_class = row_offsets.shape
+    num_boxes = selected_indices.shape[1]
+
+    ib = tvm.tir.ir_builder.create()
+
+    selected_indices = ib.buffer_ptr(selected_indices)
+    selected_scores = ib.buffer_ptr(selected_scores)
+    num_detections = ib.buffer_ptr(num_detections)
+    row_offsets = ib.buffer_ptr(row_offsets)
+    collected_indices = ib.buffer_ptr(collected_indices)
+    collected_scores = ib.buffer_ptr(collected_scores)
+
+    max_threads = int(tvm.target.Target.current(allow_none=False).max_num_threads)
+    nthread_tx = max_threads
+    nthread_bx = ceil_div(num_boxes, nthread_tx)
+    nthread_by = batch_size * num_class
+    tx = te.thread_axis("threadIdx.x")
+    bx = te.thread_axis("blockIdx.x")
+    by = te.thread_axis("blockIdx.y")
+    ib.scope_attr(tx, "thread_extent", nthread_tx)
+    ib.scope_attr(bx, "thread_extent", nthread_bx)
+    ib.scope_attr(by, "thread_extent", nthread_by)
+    zero = cast(0, "int64")
+
+    with ib.new_scope():
+        idx = bx * nthread_tx + tx
+        idy = cast(by, "int64")
+        batch_id = idy // num_class
+        class_id = idy % num_class
+        offset = row_offsets[batch_id, class_id] + idx
+
+        with ib.if_scope(idx < num_detections[batch_id, class_id]):
+            collected_indices[batch_id, offset, 0] = class_id
+            collected_indices[batch_id, offset, 1] = cast(selected_indices[idy, idx], "int64")
+            collected_scores[batch_id, offset] = selected_scores[idy, idx]
+        with ib.else_scope():
+            with ib.if_scope(idx < num_boxes):
+                collected_indices[batch_id, offset, 0] = zero
+                collected_indices[batch_id, offset, 1] = zero
+                collected_scores[batch_id, offset] = -1.0
+
+    return ib.get()
+
+
+def collect_selected_indices_tf(selected_indices, selected_scores, num_detections, row_offsets):
+    batch_size, num_class = row_offsets.shape
+    num_boxes = selected_indices.shape[1]
+
+    selected_indices_buf = tvm.tir.decl_buffer(
+        selected_indices.shape, selected_indices.dtype, "selected_indices_buf", data_alignment=8
+    )
+    selected_scores_buf = tvm.tir.decl_buffer(
+        selected_scores.shape, selected_scores.dtype, "selected_scores_buf", data_alignment=8
+    )
+    num_detections_buf = tvm.tir.decl_buffer(
+        num_detections.shape, num_detections.dtype, "num_detections_buf", data_alignment=8
+    )
+    row_offsets_buf = tvm.tir.decl_buffer(
+        row_offsets.shape, row_offsets.dtype, "row_offsets_buf", data_alignment=8
+    )
+
+    return te.extern(
+        [(batch_size, num_class * num_boxes, 2), (batch_size, num_class * num_boxes)],
+        [selected_indices, selected_scores, num_detections, row_offsets],
+        lambda ins, outs: _collect_selected_indices_tf_ir(
+            num_class, ins[0], ins[1], ins[2], ins[3], outs[0], outs[1]
+        ),
+        dtype=["int64", "float32"],
+        in_buffers=[selected_indices_buf, selected_scores_buf, num_detections_buf, row_offsets_buf],
+        name="collect_indices",
+        tag="collect_indices",
+    )
+
+
 def all_class_non_max_suppression(
-    boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold
+    boxes,
+    scores,
+    max_output_boxes_per_class,
+    iou_threshold,
+    score_threshold,
+    max_total_size,
+    output_format="onnx",
 ):
     """Non-maximum suppression operator for object detection, corresponding to ONNX
     NonMaxSuppression and TensorFlow combined_non_max_suppression.
@@ -1012,6 +1103,8 @@ def all_class_non_max_suppression(
     score_threshold : float or tvm.te.Tensor, optional
         Score threshold to filter out low score boxes early
 
+    output_format : str
+
     Returns
     -------
     out : [tvm.te.Tensor, tvm.te.Tensor]
@@ -1029,7 +1122,28 @@ def all_class_non_max_suppression(
     sorted_scores, sorted_indices = _dispatch_sort(scores, ret_type="both")
     valid_count = _get_valid_box_count(sorted_scores, score_threshold)
 
-    selected_indices, num_detections = run_all_class_nms(
+    if output_format == "onnx":
+        selected_indices, num_detections = run_all_class_nms(
+            boxes,
+            sorted_scores,
+            sorted_indices,
+            valid_count,
+            max_output_boxes_per_class,
+            iou_threshold,
+            _nms_loop,
+        )
+
+        row_offsets, num_total_detections = exclusive_scan(
+            num_detections, return_reduction=True, output_dtype="int64"
+        )
+        selected_indices = collect_selected_indices(
+            num_class, selected_indices, num_detections, row_offsets, _collect_selected_indices_ir
+        )
+        return [selected_indices, num_total_detections]
+
+    max_detection_per_batch = max_total_size
+
+    selected_indices, selected_scores, num_detections = run_all_class_nms(
         boxes,
         sorted_scores,
         sorted_indices,
@@ -1037,14 +1151,20 @@ def all_class_non_max_suppression(
         max_output_boxes_per_class,
         iou_threshold,
         _nms_loop,
+        return_scores=True,
     )
 
+    # tf mode, return (batch_size, max_total_size, 2)
+    num_detections_per_batch = reshape(num_detections, (batch, num_class))
     row_offsets, num_total_detections = exclusive_scan(
-        num_detections, return_reduction=True, output_dtype="int64"
+        num_detections_per_batch, return_reduction=True, output_dtype="int64", axis=1
     )
-
-    selected_indices = collect_selected_indices(
-        num_class, selected_indices, num_detections, row_offsets, _collect_selected_indices_ir
+    selected_indices, selected_scores = collect_selected_indices_tf(
+        selected_indices, selected_scores, num_detections_per_batch, row_offsets
     )
+    topk_indices = topk(selected_scores, k=max_detection_per_batch, axis=1, ret_type="indices")[0]
+    topk_indices = expand_dims(topk_indices, axis=0)
+    final_indices = gather_nd(selected_indices, topk_indices, batch_dims=1)
+    num_detections = minimum(num_total_detections, max_detection_per_batch)
 
-    return [selected_indices, num_total_detections]
+    return [final_indices, num_detections]

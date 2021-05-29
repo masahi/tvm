@@ -794,22 +794,76 @@ def _nms(return_scores=False):
 
 
 def _combined_nms():
+    def all_class_impl(
+        boxes,
+        scores,
+        max_output_boxes_per_class,
+        iou_threshold,
+        score_threshold,
+        max_total_size,
+        clip_boxes,
+        mod,
+    ):
+        indices, num_detections = _op.vision.all_class_non_max_suppression(
+            boxes,
+            scores,
+            max_output_boxes_per_class,
+            iou_threshold,
+            score_threshold,
+            max_total_size,
+            output_format="tensorflow",
+        )
+        nmsed_box_indices = _op.take(indices, _op.const(1), axis=2)
+        nmsed_classes = _op.cast(_op.take(indices, _op.const(0), axis=2), "float32")
+        nmsed_boxes = _op.gather_nd(boxes, _op.expand_dims(nmsed_box_indices, axis=0), batch_dims=1)
+
+        indices_shape = _infer_shape(indices, mod)
+        indices_dims = len(indices_shape)
+        indices = _op.transpose(indices, axes=[-1] + list(range(indices_dims - 1)))
+        nmsed_scores = _op.gather_nd(scores, indices, batch_dims=1)
+
+        if clip_boxes:
+            nmsed_boxes = _op.maximum(nmsed_boxes, _expr.const(0, dtype="float32"))
+            nmsed_boxes = _op.minimum(nmsed_boxes, _expr.const(1, dtype="float32"))
+
+        # Fill in invalid entries with 0
+        box_range = _op.arange(
+            _op.const(0, dtype="int64"), _op.const(max_total_size, dtype="int64"), dtype="int64"
+        )
+        batch_size = indices_shape[0]
+
+        if isinstance(batch_size, tvm.tir.Any):
+            box_range_2d = _op.tile(box_range, _op.concatenate([batch_size, 1]))
+        else:
+            box_range_2d = _op.tile(box_range, _op.const([batch_size, 1]))
+
+        valid_mask = _op.cast(
+            _op.less(box_range_2d, _op.expand_dims(num_detections, axis=1)), "float32"
+        )
+        nmsed_scores = nmsed_scores * valid_mask
+        nmsed_classes = nmsed_classes * valid_mask
+        nmsed_boxes = nmsed_boxes * _op.expand_dims(valid_mask, axis=2)
+
+        return _expr.TupleWrapper(
+            _expr.Tuple([nmsed_boxes, nmsed_scores, nmsed_classes, num_detections]), 4
+        )
+
     def _impl(inputs, attr, params, mod):
         # Get parameter values
         boxes = inputs[0]
         scores = inputs[1]
         try:
-            max_output_size = int(np.atleast_1d(inputs[2].data.numpy().astype("int64"))[0])
+            max_output_size = int(np.atleast_1d(inputs[2].data.asnumpy().astype("int64"))[0])
         except Exception:
             try:
                 max_output_size = (
-                    _infer_value(inputs[2], params, mod).numpy().astype("int64").tolist()[0]
+                    _infer_value(inputs[2], params, mod).asnumpy().astype("int64").tolist()[0]
                 )
             except Exception:
                 max_output_size = inputs[2]
         max_total_size = inputs[3]
-        iou_threshold = np.atleast_1d(inputs[4].data.numpy())[0]
-        score_threshold = np.atleast_1d(inputs[5].data.numpy())[0]
+        iou_threshold = np.atleast_1d(inputs[4].data.asnumpy())[0]
+        score_threshold = np.atleast_1d(inputs[5].data.asnumpy())[0]
         if attr["pad_per_class"]:
             raise tvm.error.OpAttributeUnImplemented(
                 "pad_per_class for CombinedNonMaxSuppression is not supported"
@@ -821,9 +875,20 @@ def _combined_nms():
         q = boxes_shape[2]
         num_classes = scores_shape[2]
 
-        if q != num_classes:
-            # When q is 1, it means same box coords are used for all classes.
-            boxes = _op.broadcast_to(boxes, (batch_size, num_anchors, num_classes, 4))
+        if q == 1:
+            boxes = _op.squeeze(boxes, axis=[2])
+            scores_trans = _op.transpose(scores, [0, 2, 1])
+            return all_class_impl(
+                boxes,
+                scores_trans,
+                max_output_size,
+                iou_threshold,
+                score_threshold,
+                max_total_size.data.numpy().item(),
+                attr["clip_boxes"],
+                mod,
+            )
+
         boxes = _op.reshape(boxes, newshape=[batch_size, num_anchors * num_classes, 4])
         scores = _op.reshape(scores, newshape=[batch_size, num_anchors * num_classes, 1])
 

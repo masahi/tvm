@@ -728,7 +728,7 @@ def _collect_selected_indices_ir(num_class, selected_indices, num_detections, ro
 
 
 def all_class_non_max_suppression(
-    boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold
+    boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold, output_format
 ):
     """Non-maximum suppression operator for object detection, corresponding to ONNX
     NonMaxSuppression and TensorFlow combined_non_max_suppression.
@@ -750,6 +750,8 @@ def all_class_non_max_suppression(
 
     score_threshold : float or tvm.te.Tensor, optional
         Score threshold to filter out low score boxes early
+    
+    output_format : TODO
 
     Returns
     -------
@@ -783,8 +785,9 @@ def all_class_non_max_suppression(
 
     num_total_detections = reduction.sum(cast(num_detections, "int64"), axis=1)
 
-    selected_indices = collect_selected_indices(
-        num_class, selected_indices, num_detections, row_offsets, _collect_selected_indices_ir
-    )
+    if output_format == "onnx":
+        selected_indices = collect_selected_indices(
+            num_class, selected_indices, num_detections, row_offsets, _collect_selected_indices_ir
+        )
 
     return [selected_indices, num_total_detections]
