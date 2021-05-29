@@ -858,11 +858,11 @@ def _combined_nms():
             max_output_boxes_per_batch, int
         ), "dynamic number of boxes not supported yet."
         nmsed_scores, topk_indices = select_topk(max_output_boxes_per_batch < max_total_size)
-        indices = _op.take(selected_indices, topk_indices, axis=1, batch_dims=1)
 
+        indices = _op.take(selected_indices, topk_indices, axis=1, batch_dims=1)
         nmsed_box_indices = _op.take(indices, _op.const(1), axis=2)
-        nmsed_classes = _op.cast(_op.take(indices, _op.const(0), axis=2), "float32")
-        nmsed_boxes = _op.gather_nd(boxes, _op.expand_dims(nmsed_box_indices, axis=0), batch_dims=1)
+        nmsed_classes = _op.take(indices, _op.const(0), axis=2)
+        nmsed_boxes = _op.take(boxes, nmsed_box_indices, axis=1, batch_dims=1)
 
         if clip_boxes:
             nmsed_boxes = _op.maximum(nmsed_boxes, _expr.const(0, dtype="float32"))
