@@ -306,7 +306,7 @@ def run_all_class_nms(
     )
 
     if return_scores is False:
-        return te.extern(
+        selected_indices, num_detections = te.extern(
             [(batch_class, num_boxes), (1, batch_class)],
             [boxes, sorted_scores, sorted_indices, valid_count],
             lambda ins, outs: _all_class_nms_ir(
@@ -334,6 +334,7 @@ def run_all_class_nms(
             name="all_class_nms",
             tag="all_class_nms",
         )
+        return selected_indices, None, num_detections
 
     return te.extern(
         [(batch_class, num_boxes), (batch_class, num_boxes), (1, batch_class)],
