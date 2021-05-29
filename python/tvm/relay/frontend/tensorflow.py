@@ -841,7 +841,6 @@ def _combined_nms():
             _op.less(box_range_2d, _op.expand_dims(num_detections, axis=1)), "float32"
         )
         nmsed_scores = nmsed_scores * valid_mask
-        nmsed_classes = nmsed_classes * valid_mask
         nmsed_boxes = nmsed_boxes * _op.expand_dims(valid_mask, axis=2)
 
         return _expr.TupleWrapper(
