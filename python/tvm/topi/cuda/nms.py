@@ -1027,17 +1027,24 @@ def _collect_selected_indices_and_scores_ir(
         idy = cast(by, "int64")
         batch_id = idy // num_class
         class_id = idy % num_class
+
+        with ib.if_scope(idx < num_boxes):
+            offset = idx + class_id * num_boxes
+            collected_indices[batch_id, offset, 0] = zero
+            collected_indices[batch_id, offset, 1] = zero
+            collected_scores[batch_id, offset] = -1.0
+
+    with ib.new_scope():
+        idx = bx * nthread_tx + tx
+        idy = cast(by, "int64")
+        batch_id = idy // num_class
+        class_id = idy % num_class
         offset = row_offsets[batch_id, class_id] + idx
 
         with ib.if_scope(idx < num_detections[batch_id, class_id]):
             collected_indices[batch_id, offset, 0] = class_id
             collected_indices[batch_id, offset, 1] = cast(selected_indices[idy, idx], "int64")
             collected_scores[batch_id, offset] = selected_scores[idy, idx]
-        with ib.else_scope():
-            with ib.if_scope(idx < num_boxes):
-                collected_indices[batch_id, offset, 0] = zero
-                collected_indices[batch_id, offset, 1] = zero
-                collected_scores[batch_id, offset] = -1.0
 
     return ib.get()
 
