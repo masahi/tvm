@@ -152,7 +152,7 @@ def collect_selected_indices_and_scores(
     return te.extern(
         [(batch_size, num_class * num_boxes, 2), (batch_size, num_class * num_boxes)],
         [selected_indices, selected_scores, num_detections, row_offsets],
-        lambda ins, outs: ir(num_class, ins[0], ins[1], ins[2], ins[3], outs[0], outs[1]),
+        lambda ins, outs: ir(ins[0], ins[1], ins[2], ins[3], outs[0], outs[1]),
         dtype=["int64", "float32"],
         in_buffers=[selected_indices_buf, selected_scores_buf, num_detections_buf, row_offsets_buf],
         name="collect_indices",
@@ -354,9 +354,8 @@ def run_all_class_nms(
 
 
 def post_process_max_detections(
-    selected_indices, selected_scores, num_total_detections, max_total_size, topk_func
+    selected_indices, topk_indices, num_total_detections, max_total_size
 ):
-    topk_indices = topk_func(selected_scores, k=max_total_size, axis=1, ret_type="indices")[0]
     topk_indices = expand_dims(topk_indices, axis=0)
     final_indices = gather_nd(selected_indices, topk_indices, batch_dims=1)
     num_detections = minimum(num_total_detections, max_total_size)
