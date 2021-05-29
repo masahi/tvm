@@ -22,9 +22,9 @@ from tvm import te
 from tvm.te import hybrid
 from tvm.tir import if_then_else
 
-from ..sort import sort, argsort, topk
+from ..sort import argsort, topk
 from ..math import cast
-from ..transform import reshape, arange, expand_dims, gather
+from ..transform import reshape, gather
 from .. import reduction
 from ..scan import cumsum
 from .nms_util import (

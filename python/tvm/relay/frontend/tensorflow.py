@@ -853,17 +853,17 @@ def _combined_nms():
         boxes = inputs[0]
         scores = inputs[1]
         try:
-            max_output_size = int(np.atleast_1d(inputs[2].data.asnumpy().astype("int64"))[0])
+            max_output_size = int(np.atleast_1d(inputs[2].data.numpy().astype("int64"))[0])
         except Exception:
             try:
                 max_output_size = (
-                    _infer_value(inputs[2], params, mod).asnumpy().astype("int64").tolist()[0]
+                    _infer_value(inputs[2], params, mod).numpy().astype("int64").tolist()[0]
                 )
             except Exception:
                 max_output_size = inputs[2]
         max_total_size = inputs[3]
-        iou_threshold = np.atleast_1d(inputs[4].data.asnumpy())[0]
-        score_threshold = np.atleast_1d(inputs[5].data.asnumpy())[0]
+        iou_threshold = np.atleast_1d(inputs[4].data.numpy())[0]
+        score_threshold = np.atleast_1d(inputs[5].data.numpy())[0]
         if attr["pad_per_class"]:
             raise tvm.error.OpAttributeUnImplemented(
                 "pad_per_class for CombinedNonMaxSuppression is not supported"
