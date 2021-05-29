@@ -18,8 +18,6 @@
 """Common utilities used in Non-maximum suppression operators"""
 import tvm
 from tvm import te
-from ..broadcast import minimum
-from ..transform import gather_nd, expand_dims
 
 
 def _get_boundaries(output, box_idx):
@@ -302,12 +300,3 @@ def run_all_class_nms(
         name="all_class_nms",
         tag="all_class_nms",
     )
-
-
-def post_process_max_detections(
-    selected_indices, topk_indices, num_total_detections, max_total_size
-):
-    topk_indices = expand_dims(topk_indices, axis=0)
-    final_indices = gather_nd(selected_indices, topk_indices, batch_dims=1)
-    num_detections = minimum(num_total_detections, max_total_size)
-    return [final_indices, num_detections]

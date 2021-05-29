@@ -152,29 +152,33 @@ bool AllClassNMSRel(const Array<Type>& types, int num_inputs, const Attrs& attrs
   IndexExpr num_classes = scores_shape[1];
   IndexExpr num_boxes = boxes_shape[1];
 
-  IndexExpr num_total_boxes = Any();
-  if (!batch.as<AnyNode>() && !num_boxes.as<AnyNode>()) {
-    num_total_boxes = batch * num_classes * num_boxes;
-  }
-
   const auto* param = attrs.as<AllClassNonMaximumSuppressionAttrs>();
   CHECK(param);
 
   std::vector<Type> fields;
   if (param->output_format == "onnx") {
+    IndexExpr num_total_boxes = Any();
+    if (!batch.as<AnyNode>() && !num_boxes.as<AnyNode>()) {
+      num_total_boxes = batch * num_classes * num_boxes;
+    }
     std::vector<IndexExpr> oshape{num_total_boxes, 3};
-    std::vector<IndexExpr> countshape{1};
+    std::vector<IndexExpr> counts_shape{1};
     fields.push_back(TensorType(oshape, DataType::Int(64)));
-    fields.push_back(TensorType(countshape, DataType::Int(64)));
+    fields.push_back(TensorType(counts_shape, DataType::Int(64)));
   } else {
     ICHECK(param->max_total_size) << "max_total_size required for tf mode";
     Integer max_total_size = param->max_total_size.value();
-    std::vector<IndexExpr> oshape{batch, max_total_size, 2};
-    std::vector<IndexExpr> countshape{batch};
-    fields.push_back(TensorType(oshape, DataType::Int(64)));
-    fields.push_back(TensorType(countshape, DataType::Int(64)));
+    IndexExpr num_total_boxes_per_batch = Any();
+    if (!num_boxes.as<AnyNode>()) {
+      num_total_boxes_per_batch = num_classes * num_boxes;
+    }
+    std::vector<IndexExpr> indices_shape{batch, num_total_boxes_per_batch, 2};
+    std::vector<IndexExpr> scores_shape{batch, num_total_boxes_per_batch};
+    std::vector<IndexExpr> counts_shape{batch};
+    fields.push_back(TensorType(indices_shape, DataType::Int(64)));
+    fields.push_back(TensorType(scores_shape, DataType::Float(32)));
+    fields.push_back(TensorType(counts_shape, DataType::Int(64)));
   }
-
   reporter->Assign(types[5], TupleType(Array<Type>(fields)));
   return true;
 }

@@ -34,7 +34,6 @@ from ..vision.nms_util import (
     collect_selected_indices,
     collect_selected_indices_and_scores,
     run_all_class_nms,
-    post_process_max_detections,
 )
 
 
@@ -1134,8 +1133,4 @@ def all_class_non_max_suppression(
         _collect_selected_indices_and_scores_ir,
     )
 
-    topk_indices = topk(selected_scores, k=max_total_size, axis=1, ret_type="indices")[0]
-
-    return post_process_max_detections(
-        selected_indices, topk_indices, num_total_detections, max_total_size
-    )
+    return [selected_indices, selected_scores, num_total_detections]

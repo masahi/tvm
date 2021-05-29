@@ -22,7 +22,7 @@ from tvm import te
 from tvm.te import hybrid
 from tvm.tir import if_then_else
 
-from ..sort import argsort, topk
+from ..sort import argsort
 from ..math import cast
 from ..transform import reshape, gather
 from .. import reduction
@@ -32,7 +32,6 @@ from .nms_util import (
     collect_selected_indices,
     collect_selected_indices_and_scores,
     run_all_class_nms,
-    post_process_max_detections,
 )
 
 
@@ -862,11 +861,4 @@ def all_class_non_max_suppression(
         _collect_selected_indices_and_scores_ir,
     )
 
-    topk_indices = topk(selected_scores, k=max_total_size, axis=1, ret_type="indices")
-
-    return post_process_max_detections(
-        selected_indices,
-        topk_indices,
-        num_total_detections,
-        max_total_size,
-    )
+    return [selected_indices, selected_scores, num_total_detections]

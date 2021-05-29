@@ -209,4 +209,8 @@ def all_class_non_max_suppression(
         max_total_size,
         output_format,
     )
-    return expr.TupleWrapper(out, 2)
+
+    if output_format == "onnx":
+        return expr.TupleWrapper(out, 2)
+
+    return expr.TupleWrapper(out, 3)
