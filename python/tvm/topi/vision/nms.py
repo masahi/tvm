@@ -24,7 +24,7 @@ from tvm.tir import if_then_else
 
 from ..sort import sort, argsort, topk
 from ..math import cast
-from ..transform import reshape, arange, expand_dims
+from ..transform import reshape, arange, expand_dims, gather
 from .. import reduction
 from ..scan import cumsum
 from .nms_util import (
@@ -824,8 +824,9 @@ def all_class_non_max_suppression(
     batch, num_class, num_boxes = scores.shape
     scores = reshape(scores, (batch * num_class, num_boxes))
 
-    sorted_scores = sort(scores, axis=1, is_ascend=False)
     sorted_indices = argsort(scores, axis=1, is_ascend=False, dtype="int32")
+    sorted_scores = gather(scores, 1, sorted_indices)
+
     valid_count = _get_valid_box_count(sorted_scores, score_threshold)
 
     if output_format == "onnx":
