@@ -852,6 +852,7 @@ def all_class_non_max_suppression(
     num_detections_per_batch = reshape(num_detections, (batch, num_class))
     row_offsets = cumsum(num_detections_per_batch, exclusive=True, dtype="int64", axis=1)
     num_total_detections = reduction.sum(cast(num_detections_per_batch, "int64"), axis=1)
+
     selected_indices, selected_scores = collect_selected_indices_and_scores(
         selected_indices,
         selected_scores,
@@ -860,7 +861,9 @@ def all_class_non_max_suppression(
         num_total_detections,
         _collect_selected_indices_and_scores_ir,
     )
+
     topk_indices = topk(selected_scores, k=max_total_size, axis=1, ret_type="indices")
+
     return post_process_max_detections(
         selected_indices,
         topk_indices,
