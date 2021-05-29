@@ -772,7 +772,7 @@ def _collect_selected_indices_and_scores_ir(
                 )
                 collected_indices[batch_id, offset, 0] = zero
                 collected_indices[batch_id, offset, 1] = zero
-                collected_scores[batch_id, offset] = -1.0
+                collected_scores[batch_id, offset] = 0.0
 
     return ib.get()
 

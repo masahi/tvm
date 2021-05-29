@@ -796,6 +796,8 @@ def _nms(return_scores=False):
 def _combined_nms():
     def all_class_impl(
         batch_size,
+        num_boxes,
+        num_classes,
         boxes,
         scores,
         max_output_boxes_per_class,
@@ -818,12 +820,40 @@ def _combined_nms():
             max_total_size,
             output_format="tensorflow",
         )
-        nmsed_scores, topk_indices = _op.topk(
-            selected_scores, k=max_total_size, axis=1, ret_type="both"
+        num_detections = _op.minimum(num_detections, _op.const(max_total_size, dtype="int64"))
+        box_range = _op.arange(
+            _op.const(0, dtype="int64"), _op.const(max_total_size, dtype="int64"), dtype="int64"
         )
+        tile_batch_reps = (
+            _op.concatenate([batch_size, 1])
+            if isinstance(batch_size, tvm.tir.Any)
+            else _op.const([batch_size, 1])
+        )
+        box_range_2d = _op.tile(box_range, tile_batch_reps)
+        valid_mask = _op.cast(
+            _op.less(box_range_2d, _op.expand_dims(num_detections, axis=1)), "float32"
+        )
+
+        # TODO: support dynamic num_boxes
+        max_output_boxes = num_boxes * num_classes
+        if max_output_boxes < max_total_size:
+            arange = _op.arange(
+                _op.const(0, dtype="int64"),
+                _op.const(max_output_boxes, dtype="int64"),
+                dtype="int64",
+            )
+            pad = _op.full(_op.const(0, dtype="int64"), (max_total_size - max_output_boxes,))
+            topk_indices = _op.tile(_op.concatenate([arange, pad], 0), tile_batch_reps)
+            nmsed_scores = _op.gather(selected_scores, 1, topk_indices)
+            nmsed_scores = nmsed_scores * valid_mask
+        else:
+            nmsed_scores, topk_indices = _op.topk(
+                selected_scores, k=max_total_size, axis=1, ret_type="both"
+            )
+
         topk_indices = _op.expand_dims(topk_indices, axis=0)
         indices = _op.gather_nd(selected_indices, topk_indices, batch_dims=1)
-        num_detections = _op.minimum(num_detections, _op.const(max_total_size, dtype="int64"))
+
         nmsed_box_indices = _op.take(indices, _op.const(1), axis=2)
         nmsed_classes = _op.cast(_op.take(indices, _op.const(0), axis=2), "float32")
         nmsed_boxes = _op.gather_nd(boxes, _op.expand_dims(nmsed_box_indices, axis=0), batch_dims=1)
@@ -832,18 +862,6 @@ def _combined_nms():
             nmsed_boxes = _op.maximum(nmsed_boxes, _expr.const(0, dtype="float32"))
             nmsed_boxes = _op.minimum(nmsed_boxes, _expr.const(1, dtype="float32"))
 
-        # Fill in invalid entries with 0
-        box_range = _op.arange(
-            _op.const(0, dtype="int64"), _op.const(max_total_size, dtype="int64"), dtype="int64"
-        )
-        if isinstance(batch_size, tvm.tir.Any):
-            box_range_2d = _op.tile(box_range, _op.concatenate([batch_size, 1]))
-        else:
-            box_range_2d = _op.tile(box_range, _op.const([batch_size, 1]))
-
-        valid_mask = _op.cast(
-            _op.less(box_range_2d, _op.expand_dims(num_detections, axis=1)), "float32"
-        )
         nmsed_boxes = nmsed_boxes * _op.expand_dims(valid_mask, axis=2)
 
         return _expr.TupleWrapper(
@@ -882,6 +900,8 @@ def _combined_nms():
             scores_trans = _op.transpose(scores, [0, 2, 1])
             return all_class_impl(
                 batch_size,
+                num_anchors,
+                num_classes,
                 boxes,
                 scores_trans,
                 max_output_size,
