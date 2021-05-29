@@ -157,19 +157,34 @@ bool AllClassNMSRel(const Array<Type>& types, int num_inputs, const Attrs& attrs
     num_total_boxes = batch * num_classes * num_boxes;
   }
 
-  // assign output type
+  const auto* param = attrs.as<AllClassNonMaximumSuppressionAttrs>();
+  CHECK(param);
+
   std::vector<Type> fields;
-  std::vector<IndexExpr> oshape{num_total_boxes, 3};
-  fields.push_back(TensorType(oshape, DataType::Int(64)));
-  std::vector<IndexExpr> countshape{1};
-  fields.push_back(TensorType(countshape, DataType::Int(64)));
+  if (param->output_format == "onnx") {
+    std::vector<IndexExpr> oshape{num_total_boxes, 3};
+    std::vector<IndexExpr> countshape{1};
+    fields.push_back(TensorType(oshape, DataType::Int(64)));
+    fields.push_back(TensorType(countshape, DataType::Int(64)));
+  } else {
+    ICHECK(param->max_total_size) << "max_total_size required for tf mode";
+    Integer max_total_size = param->max_total_size.value();
+    std::vector<IndexExpr> oshape{batch, max_total_size, 2};
+    std::vector<IndexExpr> countshape{batch};
+    fields.push_back(TensorType(oshape, DataType::Int(64)));
+    fields.push_back(TensorType(countshape, DataType::Int(64)));
+  }
+
   reporter->Assign(types[5], TupleType(Array<Type>(fields)));
   return true;
 }
 
 Expr MakeAllClassNMS(Expr boxes, Expr scores, Expr max_output_boxes_per_class, Expr iou_threshold,
-                     Expr score_threshold) {
+                     Expr score_threshold, Optional<Integer> max_total_size = NullValue<Integer>(),
+                     std::string output_format = "onnx") {
   auto attrs = make_object<AllClassNonMaximumSuppressionAttrs>();
+  attrs->max_total_size = std::move(max_total_size);
+  attrs->output_format = std::move(output_format);
   static const Op& op = Op::Get("vision.all_class_non_max_suppression");
   return Call(op, {boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold},
               Attrs(attrs), {});
