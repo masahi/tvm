@@ -854,7 +854,9 @@ def _combined_nms():
             # return _expr.If(do_zero_pad, true_branch(), false_branch())
             return true_branch() if do_zero_pad else false_branch()
 
-        assert isinstance(max_output_boxes_per_batch, int),"dynamic number of boxes not supported yet."
+        assert isinstance(
+            max_output_boxes_per_batch, int
+        ), "dynamic number of boxes not supported yet."
         nmsed_scores, topk_indices = select_topk(max_output_boxes_per_batch < max_total_size)
         topk_indices = _op.expand_dims(topk_indices, axis=0)
         indices = _op.gather_nd(selected_indices, topk_indices, batch_dims=1)
