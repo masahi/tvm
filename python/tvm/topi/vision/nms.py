@@ -25,6 +25,7 @@ from tvm.tir import if_then_else
 from ..sort import argsort
 from ..math import cast
 from ..transform import reshape, gather
+from ..broadcast import minimum
 from .. import reduction
 from ..scan import cumsum
 from .nms_util import (
@@ -772,7 +773,7 @@ def _collect_selected_indices_and_scores_ir(
                 )
                 collected_indices[batch_id, offset, 0] = zero
                 collected_indices[batch_id, offset, 1] = zero
-                collected_scores[batch_id, offset] = -1.0
+                collected_scores[batch_id, offset] = 0.0
 
     return ib.get()
 
@@ -860,5 +861,7 @@ def all_class_non_max_suppression(
         num_total_detections,
         _collect_selected_indices_and_scores_ir,
     )
+
+    num_total_detections = minimum(num_total_detections, max_total_size)
 
     return [selected_indices, selected_scores, num_total_detections]
