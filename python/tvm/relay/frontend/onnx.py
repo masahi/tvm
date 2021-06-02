@@ -3011,6 +3011,19 @@ class Unique(OnnxOpConverter):
         return _expr.TupleWrapper(_expr.Tuple([unique_vals, indices, inverse_indices, counts]), 4)
 
 
+class EyeLike(OnnxOpConverter):
+    """Operator converter for EyeLike."""
+
+    @classmethod
+    def _impl_v9(cls, inputs, attr, params):
+        in_dtype = infer_type(inputs[0]).checked_type.dtype
+        zeros = _op.zeros_like(inputs[0])
+        dim = infer_shape(zeros)[0]
+        indices = _op.arange(_op.const(0), _op.const(dim), dtype="int32")
+        ones = _op.full(_op.const(1), (dim,), dtype=in_dtype)
+        return _op.scatter_nd(zeros, _op.stack([indices, indices], axis=0), ones, "update")
+
+
 # compatible operators that do NOT require any conversion.
 _identity_list = []
 
@@ -3175,6 +3188,7 @@ def _get_convert_map(opset):
         "Range": Range.get_converter(opset),
         "CumSum": CumSum.get_converter(opset),
         "Unique": Unique.get_converter(opset),
+        "EyeLike": EyeLike.get_converter(opset),
         # defs/control_flow
         "Loop": Loop.get_converter(opset),
         "If": If.get_converter(opset),
