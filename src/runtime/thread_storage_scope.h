@@ -180,6 +180,8 @@ struct ThreadScope {
 struct ThreadWorkLoad {
   // array, first three are thread configuration.
   size_t work_size[6];
+  // TODO
+  size_t dyn_shmem_size{0};
   /*!
    * \param i The block dimension.
    * \return i-th block dim
@@ -221,6 +223,7 @@ class ThreadAxisConfig {
         w.work_size[arg_index_map_[i]] = size;
       }
     }
+    w.dyn_shmem_size = static_cast<size_t>(x.values[base_ + arg_index_map_.size()].v_int64);
     return w;
   }
   // return the work dim
