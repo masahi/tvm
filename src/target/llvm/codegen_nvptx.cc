@@ -55,8 +55,8 @@ class CodeGenNVPTX : public CodeGenLLVM {
     }
 
     if (info.scope.rank == runtime::StorageRank::kDynShared) {
-      // Shared memory: address space  == 3
-      buf = AllocateSharedMemory(op->dtype, 0, 3, info.alignment);
+      buf =
+          AllocateSharedMemory(op->dtype, 0, 3, info.alignment, llvm::GlobalValue::ExternalLinkage);
     } else {
       int32_t constant_size = op->constant_allocation_size();
       ICHECK_GT(constant_size, 0) << "Can only handle constant size stack allocation in GPU";
@@ -81,7 +81,8 @@ class CodeGenNVPTX : public CodeGenLLVM {
       } else {
         ICHECK(info.scope.rank == runtime::StorageRank::kShared)
             << "Can only allocate shared or local memory inside kernel";
-        buf = AllocateSharedMemory(op->dtype, constant_size, 3, info.alignment);
+        buf = AllocateSharedMemory(op->dtype, constant_size, 3, info.alignment,
+                                   llvm::GlobalValue::PrivateLinkage);
       }
     }
 
