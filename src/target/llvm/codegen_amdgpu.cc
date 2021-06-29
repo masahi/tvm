@@ -95,7 +95,7 @@ class CodeGenAMDGPU : public CodeGenLLVM {
 #if TVM_LLVM_VERSION >= 100
         alloca->setAlignment(llvm::Align(alignment));
 #else
-        alloca->setAlignment(info.alignment);
+        alloca->setAlignment(alignment);
 #endif
       }
       buf = alloca;
@@ -113,7 +113,7 @@ class CodeGenAMDGPU : public CodeGenLLVM {
 #if TVM_LLVM_VERSION >= 100
         global->setAlignment(llvm::Align(alignment));
 #else
-        global->setAlignment(info.alignment);
+        global->setAlignment(alignment);
 #endif
       }
       buf = global;

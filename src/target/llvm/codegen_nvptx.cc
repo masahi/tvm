@@ -87,7 +87,7 @@ class CodeGenNVPTX : public CodeGenLLVM {
 #if TVM_LLVM_VERSION >= 100
       global->setAlignment(llvm::Align(alignment));
 #else
-      global->setAlignment(info.alignment);
+      global->setAlignment(alignment);
 #endif
       buf = global;
     }
