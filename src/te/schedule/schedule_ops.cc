@@ -214,7 +214,8 @@ class SchedulePostProc : public StmtExprMutator {
     auto it = replace_realize_.find(key);
     if (it != replace_realize_.end()) {
       if (it->second.defined()) {
-        Stmt ret = ProducerRealize(it->second, op->bounds, op->condition, op->body, op->storage_scope);
+        Stmt ret =
+            ProducerRealize(it->second, op->bounds, op->condition, op->body, op->storage_scope);
         return this->VisitStmt(ret);
       } else {
         return this->VisitStmt(op->body);
