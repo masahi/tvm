@@ -53,8 +53,8 @@ class CodeGenNVPTX : public CodeGenLLVM {
     if (info.alignment > 16) {
       info.alignment = 16;
     }
-
-    if (info.scope.rank == runtime::StorageRank::kDynShared) {
+    auto storage_scope = runtime::StorageScope::Create(GetStorageScope(op->buffer_var));
+    if (storage_scope.rank == runtime::StorageRank::kDynShared) {
       buf =
           AllocateSharedMemory(op->dtype, 0, 3, info.alignment, llvm::GlobalValue::ExternalLinkage);
     } else {
@@ -64,7 +64,7 @@ class CodeGenNVPTX : public CodeGenLLVM {
       if (constant_size % 4 == 0 && info.alignment == 0) {
         info.alignment = GetTempAllocaAlignment(op->dtype, constant_size);
       }
-      if (info.scope.rank == runtime::StorageRank::kLocal) {
+      if (storage_scope.rank == runtime::StorageRank::kLocal) {
         // const int local_address_space = 5;
         // TODO(tqchen): for higher version of LLVM, local address space can be set.
         llvm::AllocaInst* alloca = WithFunctionEntry([&]() {
@@ -79,7 +79,7 @@ class CodeGenNVPTX : public CodeGenLLVM {
         }
         buf = alloca;
       } else {
-        ICHECK(info.scope.rank == runtime::StorageRank::kShared)
+        ICHECK(storage_scope.rank == runtime::StorageRank::kShared)
             << "Can only allocate shared or local memory inside kernel";
         buf = AllocateSharedMemory(op->dtype, constant_size, 3, info.alignment,
                                    llvm::GlobalValue::PrivateLinkage);
