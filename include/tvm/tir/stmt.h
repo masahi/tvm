@@ -464,7 +464,7 @@ class ProducerRealizeNode : public StmtNode {
   PrimExpr condition;
   /*! \brief The body of realization. */
   Stmt body;
-
+  /*! \brief The storage scope associated with this realization. */
   String storage_scope;
 
   void VisitAttrs(AttrVisitor* v) {

@@ -400,8 +400,8 @@ ProducerRealize::ProducerRealize(DataProducer producer, Region bounds, PrimExpr 
 
 TVM_REGISTER_GLOBAL("tir.ProducerRealize")
     .set_body_typed([](DataProducer producer, Region bounds, PrimExpr condition, Stmt body,
-                       Span span) {
-      return ProducerRealize(producer, bounds, condition, body, "", span);
+                       String storage_scope, Span span) {
+      return ProducerRealize(producer, bounds, condition, body, storage_scope, span);
     });
 
 TVM_REGISTER_NODE_TYPE(ProducerRealizeNode);

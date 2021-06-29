@@ -125,6 +125,7 @@ class TVM_DLL OperationNode : public Object {
    * \param stage the op's stage.
    * \param realize_map The realization domain map of the operators.
    * \param body The body that is going to get
+   * \param storage_scope The storage scope associated with this realization
    * \return A realization statement that wraps body.
    */
   virtual Stmt BuildRealize(const Stage& stage,
