@@ -128,8 +128,8 @@ class TVM_DLL OperationNode : public Object {
    * \return A realization statement that wraps body.
    */
   virtual Stmt BuildRealize(const Stage& stage,
-                            const std::unordered_map<IterVar, Range>& realize_map,
-                            const Stmt& body) const = 0;
+                            const std::unordered_map<IterVar, Range>& realize_map, const Stmt& body,
+                            String storage_scope = "") const = 0;
   /*!
    * \brief Build the statement that provide the output tensors.
    * \param stage The schedule stage of the op.
@@ -168,7 +168,7 @@ class PlaceholderOpNode : public OperationNode {
   void GatherBound(const Operation& self, const std::unordered_map<Tensor, TensorDom>& tensor_dom,
                    std::unordered_map<IterVar, Range>* out_dom_map) const final;
   Stmt BuildRealize(const Stage& stage, const std::unordered_map<IterVar, Range>& realize_map,
-                    const Stmt& body) const final;
+                    const Stmt& body, String storage_scope = "") const final;
   Stmt BuildProvide(const Stage& stage, const std::unordered_map<IterVar, Range>& dom_map,
                     bool debug_keep_trivial_loop) const final;
 
@@ -212,7 +212,7 @@ class TVM_DLL BaseComputeOpNode : public OperationNode {
   void GatherBound(const Operation& self, const std::unordered_map<Tensor, TensorDom>& tensor_dom,
                    std::unordered_map<IterVar, Range>* out_dom_map) const final;
   Stmt BuildRealize(const Stage& stage, const std::unordered_map<IterVar, Range>& realize_map,
-                    const Stmt& body) const final;
+                    const Stmt& body, String storage_scope = "") const final;
   virtual size_t num_schedulable_dims() const = 0;
 
   static constexpr const char* _type_key = "BaseComputeOp";
@@ -370,7 +370,7 @@ class ScanOpNode : public OperationNode {
   void GatherBound(const Operation& self, const std::unordered_map<Tensor, TensorDom>& tensor_dom,
                    std::unordered_map<IterVar, Range>* out_dom_map) const final;
   Stmt BuildRealize(const Stage& stage, const std::unordered_map<IterVar, Range>& realize_map,
-                    const Stmt& body) const final;
+                    const Stmt& body, String storage_scope = "") const final;
   Stmt BuildProvide(const Stage& stage, const std::unordered_map<IterVar, Range>& dom_map,
                     bool debug_keep_trivial_loop) const final;
 
@@ -433,7 +433,7 @@ class ExternOpNode : public OperationNode {
   void GatherBound(const Operation& self, const std::unordered_map<Tensor, TensorDom>& tensor_dom,
                    std::unordered_map<IterVar, Range>* out_dom_map) const final;
   Stmt BuildRealize(const Stage& stage, const std::unordered_map<IterVar, Range>& realize_map,
-                    const Stmt& body) const final;
+                    const Stmt& body, String storage_scope = "") const final;
   Stmt BuildProvide(const Stage& stage, const std::unordered_map<IterVar, Range>& dom_map,
                     bool debug_keep_trivial_loop) const final;
 
@@ -498,7 +498,7 @@ class HybridOpNode : public OperationNode {
   void GatherBound(const Operation& self, const std::unordered_map<Tensor, TensorDom>& tensor_dom,
                    std::unordered_map<IterVar, Range>* out_dom_map) const final;
   Stmt BuildRealize(const Stage& stage, const std::unordered_map<IterVar, Range>& realize_map,
-                    const Stmt& body) const final;
+                    const Stmt& body, String storage_scope = "") const final;
   Stmt BuildProvide(const Stage& stage, const std::unordered_map<IterVar, Range>& dom_map,
                     bool debug_keep_trivial_loop) const final;
 

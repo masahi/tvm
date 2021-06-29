@@ -55,7 +55,7 @@ Buffer decl_buffer(Array<PrimExpr> shape, DataType dtype, String name, String st
 String GetStorageScope(Var buffer_var) {
   auto type = buffer_var->type_annotation;
   const auto* ptr_type = type.as<PointerTypeNode>();
-  ICHECK(ptr_type);
+  ICHECK(ptr_type) << "The provided variable is not of pointer type";
   return ptr_type->storage_scope;
 }
 
