@@ -251,10 +251,6 @@ class ThreadSyncInserter : public StmtExprMutator {
         is_lead_ = PrimExpr();
       }
       return ret;
-    } else if (op->attr_key == attr::storage_scope) {
-      const VarNode* buf = op->node.as<VarNode>();
-      storage_scope_[buf] = StorageScope::Create(op->value.as<StringImmNode>()->value);
-      return StmtExprMutator::VisitStmt_(op);
     } else {
       return StmtExprMutator::VisitStmt_(op);
     }
@@ -335,8 +331,6 @@ class ThreadSyncInserter : public StmtExprMutator {
   // data structure.
   StorageScope sync_scope_;
   const std::unordered_set<const Object*>& syncs_;
-  // The storage scope of each buffer
-  std::unordered_map<const VarNode*, StorageScope> storage_scope_;
   // The read write statistics of storage
   std::unordered_map<Var, Entry, ObjectPtrHash, ObjectPtrEqual> rw_stats_;
   // The statistics for global barrier

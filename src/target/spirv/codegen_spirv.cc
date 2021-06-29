@@ -23,6 +23,7 @@
  */
 #include "codegen_spirv.h"
 
+#include <tvm/tir/buffer.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/expr.h>
 #include <tvm/tir/op.h>
@@ -638,13 +639,14 @@ void CodeGenSPIRV::VisitStmt_(const AllocateNode* op) {
   ICHECK_GT(constant_size, 0) << "Can only handle constant size stack allocation in GPU";
   spirv::Value buf;
   StorageInfo& info = storage_info_[op->buffer_var.get()];
+  auto storage_scope = runtime::StorageScope::Create(GetStorageScope(op->buffer_var));
   spirv::SType etype = builder_->GetSType(op->dtype);
-  if (info.scope.rank == runtime::StorageRank::kLocal) {
+  if (storage_scope.rank == runtime::StorageRank::kLocal) {
     buf =
         builder_->Allocate(etype, static_cast<uint32_t>(constant_size), spv::StorageClassFunction);
   } else {
     // shared memory
-    ICHECK(info.scope.rank == runtime::StorageRank::kShared)
+    ICHECK(storage_scope.rank == runtime::StorageRank::kShared)
         << "Can only allocate shared or local memory inside kernel";
     // Shared memory
     buf =
@@ -667,10 +669,6 @@ void CodeGenSPIRV::VisitStmt_(const AttrStmtNode* op) {
         var_map_[iv->var.get()] = GetThreadIndex(iv, op->value);
       }
     }
-  } else if (op->attr_key == tir::attr::storage_scope) {
-    const VarNode* v = op->node.as<VarNode>();
-    ICHECK(v);
-    storage_info_[v].scope = runtime::StorageScope::Create(op->value.as<StringImmNode>()->value);
   } else if (op->attr_key == tir::attr::volatile_scope) {
     const VarNode* v = op->node.as<VarNode>();
     ICHECK(v);
