@@ -603,6 +603,29 @@ Doc TVMScriptPrinter::VisitStmt_(const AttrStmtNode* op) {
       return doc;
     }
   }
+  // merge attr with realize when possible
+  if (op->node->IsInstance<BufferNode>() && op->attr_key == "realize_scope" &&
+      op->body->IsInstance<BufferRealizeNode>()) {
+    const auto* realize = Downcast<BufferRealize>(op->body).get();
+    if (realize->buffer.same_as(op->node)) {
+      if (current_num_ != num_child_ - 1) {
+        doc << "with tir.realize(" << Print(realize->buffer) << Print(realize->bounds) << ", "
+            << Print(op->value);
+        if (!is_one(realize->condition)) {
+          doc << ", " << Print(realize->condition);
+        }
+        doc << "):" << Doc::Indent(4, Doc::NewLine() << PrintBody(realize->body));
+      } else {
+        doc << "tir.realize(" << Print(realize->buffer) << Print(realize->bounds) << ", "
+            << Print(op->value);
+        if (!is_one(realize->condition)) {
+          doc << ", " << Print(realize->condition);
+        }
+        doc << ")" << Doc::NewLine() << PrintBody(realize->body);
+      }
+      return doc;
+    }
+  }
   // concise thread env
   if (op->node->IsInstance<IterVarNode>() &&
       (op->attr_key == "thread_extent" || op->attr_key == "virtual_thread")) {
