@@ -434,5 +434,4 @@ def test_vulkan_local_threadidx(target, dev):
 
 
 if __name__ == "__main__":
-    import pytest
     sys.exit(pytest.main(sys.argv))
